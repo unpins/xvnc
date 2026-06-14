@@ -1,0 +1,288 @@
+/* unpin-vfs-pack -- build a VFS blob (a .zip whose entries use zstd, method 93)
+ * from a directory tree. Build-time tool; not shipped in the final binary.
+ *
+ *   unpin-vfs-pack OUT.zip ROOTDIR [--dict DICT] [--level N]
+ *                  [--base N] [--carry FILE] [--deflate NAME]...
+ *
+ * Every regular file under ROOTDIR is stored under its ROOTDIR-relative path,
+ * compressed with zstd. With --dict, a trained zstd dictionary (from
+ * `zstd --train`) is used for every entry AND copied into the blob as the
+ * reserved STORED entry ".unpin/zdict", so the reader can self-load it -- the
+ * one piece a vanilla zstd-zip tool won't understand. Without --dict the output
+ * is plain, interoperable zstd-in-zip.
+ *
+ * --base N rewrites the central directory so every offset is N bytes larger:
+ * the file-adjusted ("self-extracting archive") convention for a ZIP appended
+ * to an N-byte executable. The whole binary+ZIP then reads as one clean
+ * archive (`zip -A` semantics), which is also the only convention cosmo's
+ * zipos accepts. --deflate NAME (repeatable, exact ROOTDIR-relative match)
+ * stores that entry with plain deflate instead of zstd -- for entries that
+ * pre-zstd readers must still decode (unpin/aliases).
+ *
+ * The archive stays a structurally standard .zip: any tool lists it; only
+ * zstd-aware tools decode the entries.
+ *
+ * --carry FILE copies every entry of FILE's (possibly file-adjusted) ZIP into
+ * the output VERBATIM -- same method, bytes and CRC -- before adding ROOTDIR's
+ * entries. This is how a Cosmopolitan APE keeps its `/zip/` store (`.cosmo`,
+ * the `zoneinfo` tree, a bundled stdlib, ...) intact while gaining our zstd
+ * `unpin/` metadata: the existing entries stay deflate/store so cosmo still
+ * reads them, ours go in as method 93. cosmo's now-unused `.symtab.amd64` is
+ * dropped on the way through. With --carry the base defaults to where FILE's
+ * ZIP begins (its lowest local-header offset) so the rebuilt archive can be
+ * appended there; an explicit --base still wins. The resolved base is printed
+ * to stdout so the caller knows where to truncate-and-append.
+ */
+#define _XOPEN_SOURCE 700  /* nftw + FTW_PHYS */
+#ifndef MINIZ_USE_ZSTD
+#define MINIZ_USE_ZSTD
+#endif
+#include "miniz.h"
+#include "unpin_zstd.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ftw.h>
+
+#define ZDICT_ENTRY ".unpin/zdict"
+
+static mz_zip_archive g_zip;
+static const char *g_root;
+static size_t g_root_len;
+static int g_level = 19;
+static long g_files, g_bytes_in, g_bytes_out;
+
+#define MAX_DEFLATE 16
+static const char *g_deflate[MAX_DEFLATE];
+static int g_ndeflate;
+
+static int wants_deflate(const char *rel) {
+    for (int i = 0; i < g_ndeflate; i++)
+        if (!strcmp(rel, g_deflate[i])) return 1;
+    return 0;
+}
+
+static void *slurp(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) { fclose(f); return NULL; }
+    void *buf = malloc((size_t)n ? (size_t)n : 1);
+    if (buf && n && fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+    fclose(f);
+    if (buf) *len = (size_t)n;
+    return buf;
+}
+
+/* Add one file's bytes as a zstd (method 93) entry under `name`. */
+static int add_file(const char *name, const void *data, size_t len) {
+    size_t bound = unpin_zstd_bound(len);
+    void *comp = malloc(bound ? bound : 1);
+    if (!comp) return -1;
+    size_t clen = unpin_zstd_compress(comp, bound, data, len, g_level);
+    if (clen == 0 && len != 0) { free(comp); return -1; }
+    mz_uint32 crc = (mz_uint32)mz_crc32(MZ_CRC32_INIT, (const mz_uint8 *)data, len);
+    mz_bool ok = mz_zip_writer_add_mem_ex_v2(
+        &g_zip, name, comp, clen, NULL, 0,
+        MZ_ZIP_FLAG_COMPRESSED_DATA | MZ_ZIP_FLAG_ZSTD_DATA,
+        (mz_uint64)len, crc, NULL, NULL, 0, NULL, 0);
+    free(comp);
+    if (ok) { g_files++; g_bytes_in += (long)len; g_bytes_out += (long)clen; }
+    return ok ? 0 : -1;
+}
+
+static int visit(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftw) {
+    (void)sb; (void)ftw;
+    const char *rel = fpath + g_root_len;
+    while (*rel == '/') rel++;
+    if (!*rel) return 0;  /* the root itself */
+    if (typeflag == FTW_D) {
+        /* directory entry (trailing slash, empty) -- lets readdir enumerate */
+        char dir[4096];
+        snprintf(dir, sizeof dir, "%s/", rel);
+        mz_zip_writer_add_mem(&g_zip, dir, "", 0, MZ_NO_COMPRESSION);
+        return 0;
+    }
+    if (typeflag != FTW_F) return 0;  /* skip symlinks/specials */
+    size_t len = 0;
+    void *data = slurp(fpath, &len);
+    if (!data) { fprintf(stderr, "read failed: %s\n", fpath); return 1; }
+    int rc;
+    if (wants_deflate(rel)) {
+        rc = mz_zip_writer_add_mem(&g_zip, rel, data, len, MZ_BEST_COMPRESSION) ? 0 : -1;
+        if (!rc) { g_files++; g_bytes_in += (long)len; }
+    } else {
+        rc = add_file(rel, data, len);
+    }
+    free(data);
+    if (rc) { fprintf(stderr, "add failed: %s\n", rel); return 1; }
+    return 0;
+}
+
+/* Rewrite OUT.zip's central directory in place, adding `base` to every
+ * local-header offset and to the EOCD's central-directory offset. Assumes the
+ * archive we just wrote: no ZIP64, no archive comment, EOCD as the last 22
+ * bytes. Fails loudly on anything else rather than corrupting the output. */
+static int adjust_offsets(const char *out, unsigned long base) {
+    FILE *f = fopen(out, "r+b");
+    if (!f) { fprintf(stderr, "reopen failed: %s\n", out); return -1; }
+    unsigned char eocd[22];
+    if (fseek(f, -22, SEEK_END) || fread(eocd, 1, 22, f) != 22 ||
+        memcmp(eocd, "PK\x05\x06", 4) != 0) {
+        fprintf(stderr, "no EOCD at end of %s\n", out); fclose(f); return -1;
+    }
+    unsigned nrec = eocd[10] | (eocd[11] << 8);
+    unsigned long cd_size = eocd[12] | ((unsigned long)eocd[13] << 8) |
+                            ((unsigned long)eocd[14] << 16) | ((unsigned long)eocd[15] << 24);
+    unsigned long cd_off = eocd[16] | ((unsigned long)eocd[17] << 8) |
+                           ((unsigned long)eocd[18] << 16) | ((unsigned long)eocd[19] << 24);
+    if (cd_size == 0xffffffffUL || cd_off == 0xffffffffUL ||
+        cd_off + base > 0xffffffffUL) {
+        fprintf(stderr, "ZIP64 territory, cannot adjust %s\n", out); fclose(f); return -1;
+    }
+    unsigned char *cd = malloc(cd_size ? cd_size : 1);
+    if (!cd || fseek(f, (long)cd_off, SEEK_SET) || fread(cd, 1, cd_size, f) != cd_size) {
+        fprintf(stderr, "central directory read failed: %s\n", out);
+        free(cd); fclose(f); return -1;
+    }
+    unsigned long p = 0;
+    for (unsigned i = 0; i < nrec; i++) {
+        if (p + 46 > cd_size || memcmp(cd + p, "PK\x01\x02", 4) != 0) {
+            fprintf(stderr, "central directory walk failed: %s\n", out);
+            free(cd); fclose(f); return -1;
+        }
+        unsigned long lho = cd[p + 42] | ((unsigned long)cd[p + 43] << 8) |
+                            ((unsigned long)cd[p + 44] << 16) | ((unsigned long)cd[p + 45] << 24);
+        lho += base;
+        cd[p + 42] = lho & 0xff; cd[p + 43] = (lho >> 8) & 0xff;
+        cd[p + 44] = (lho >> 16) & 0xff; cd[p + 45] = (lho >> 24) & 0xff;
+        p += 46 + (cd[p + 28] | (cd[p + 29] << 8))   /* name */
+                + (cd[p + 30] | (cd[p + 31] << 8))   /* extra */
+                + (cd[p + 32] | (cd[p + 33] << 8));  /* comment */
+    }
+    cd_off += base;
+    eocd[16] = cd_off & 0xff; eocd[17] = (cd_off >> 8) & 0xff;
+    eocd[18] = (cd_off >> 16) & 0xff; eocd[19] = (cd_off >> 24) & 0xff;
+    int rc = fseek(f, (long)(cd_off - base), SEEK_SET) || fwrite(cd, 1, cd_size, f) != cd_size ||
+             fseek(f, -22, SEEK_END) || fwrite(eocd, 1, 22, f) != 22;
+    free(cd);
+    if (fclose(f) || rc) { fprintf(stderr, "offset rewrite failed: %s\n", out); return -1; }
+    return 0;
+}
+
+static long file_size(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END)) { fclose(f); return -1; }
+    long n = ftell(f);
+    fclose(f);
+    return n;
+}
+
+/* Copy every entry of FILE's (possibly file-adjusted / SFX) ZIP into g_zip
+ * verbatim, except cosmo's unused ".symtab.amd64". Sets *out_base to where
+ * FILE's ZIP begins -- its lowest local-header offset -- so the rebuilt archive
+ * is appended at exactly that point. If FILE has no trailing ZIP (a plain
+ * executable), copies nothing and sets *out_base to FILE's size (append after
+ * it). Returns 0 on success, -1 on a real error. */
+static int carry_from(const char *file, unsigned long *out_base) {
+    mz_zip_archive src;
+    memset(&src, 0, sizeof src);
+    if (!mz_zip_reader_init_file(&src, file, 0)) {
+        long sz = file_size(file);
+        if (sz < 0) { fprintf(stderr, "carry: cannot size %s\n", file); return -1; }
+        *out_base = (unsigned long)sz;
+        return 0;
+    }
+    mz_uint n = mz_zip_reader_get_num_files(&src);
+    unsigned long minofs = (unsigned long)-1;
+    int rc = 0;
+    for (mz_uint i = 0; i < n; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&src, i, &st)) {
+            fprintf(stderr, "carry: stat failed at entry %u of %s\n", i, file);
+            rc = -1; break;
+        }
+        if ((unsigned long)st.m_local_header_ofs < minofs)
+            minofs = (unsigned long)st.m_local_header_ofs;
+        if (!strcmp(st.m_filename, ".symtab.amd64")) continue;  /* drop cosmo symtab */
+        if (!mz_zip_writer_add_from_zip_reader(&g_zip, &src, i)) {
+            fprintf(stderr, "carry: copy failed for %s\n", st.m_filename);
+            rc = -1; break;
+        }
+    }
+    mz_zip_reader_end(&src);
+    if (rc) return -1;
+    *out_base = n ? minofs : (unsigned long)file_size(file);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    const char *out = NULL, *root = NULL, *dictpath = NULL, *carry = NULL;
+    unsigned long base = 0;
+    int have_base = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--dict") && i + 1 < argc) dictpath = argv[++i];
+        else if (!strcmp(argv[i], "--level") && i + 1 < argc) g_level = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--base") && i + 1 < argc) { base = strtoul(argv[++i], NULL, 10); have_base = 1; }
+        else if (!strcmp(argv[i], "--carry") && i + 1 < argc) carry = argv[++i];
+        else if (!strcmp(argv[i], "--deflate") && i + 1 < argc) {
+            if (g_ndeflate == MAX_DEFLATE) { fprintf(stderr, "too many --deflate\n"); return 2; }
+            g_deflate[g_ndeflate++] = argv[++i];
+        }
+        else if (!out) out = argv[i];
+        else if (!root) root = argv[i];
+        else { fprintf(stderr, "unexpected arg: %s\n", argv[i]); return 2; }
+    }
+    if (!out || !root) {
+        fprintf(stderr, "usage: %s OUT.zip ROOTDIR [--dict DICT] [--level N] "
+                        "[--base N] [--carry FILE] [--deflate NAME]...\n", argv[0]);
+        return 2;
+    }
+
+    void *dict = NULL; size_t dict_len = 0;
+    if (dictpath) {
+        dict = slurp(dictpath, &dict_len);
+        if (!dict) { fprintf(stderr, "cannot read dict %s\n", dictpath); return 2; }
+        unpin_zstd_set_dict(dict, dict_len);
+    }
+
+    memset(&g_zip, 0, sizeof g_zip);
+    if (!mz_zip_writer_init_file(&g_zip, out, 0)) {
+        fprintf(stderr, "cannot create %s\n", out); return 2;
+    }
+
+    /* Carry an existing tail-ZIP (cosmo's `/zip/` store) in first, verbatim,
+     * and default the base to where it began. */
+    unsigned long carry_base = 0;
+    if (carry && carry_from(carry, &carry_base) != 0) { free(dict); return 1; }
+
+    /* The dict must be readable WITHOUT the dict, so store it (method 0). */
+    if (dict)
+        mz_zip_writer_add_mem(&g_zip, ZDICT_ENTRY, dict, dict_len, MZ_NO_COMPRESSION);
+
+    g_root = root;
+    g_root_len = strlen(root);
+    if (nftw(root, visit, 16, FTW_PHYS) != 0) {
+        fprintf(stderr, "walk failed\n"); return 1;
+    }
+
+    if (!mz_zip_writer_finalize_archive(&g_zip)) {
+        fprintf(stderr, "finalize failed\n"); return 1;
+    }
+    mz_zip_writer_end(&g_zip);
+    free(dict);
+
+    if (!have_base && carry) base = carry_base;
+    if (base && adjust_offsets(out, base) != 0) return 1;
+
+    /* Report the resolved base so the caller can truncate-and-append there. */
+    printf("%lu\n", base);
+
+    fprintf(stderr, "packed %ld files: %ld -> %ld bytes (%.1f%%)%s\n",
+            g_files, g_bytes_in, g_bytes_out,
+            g_bytes_in ? 100.0 * g_bytes_out / g_bytes_in : 0.0,
+            dictpath ? " [shared dict]" : "");
+    return 0;
+}
