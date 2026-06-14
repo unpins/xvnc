@@ -40,11 +40,21 @@
       # output carries pages for every tool we dropped (vncviewer/vncpasswd/…). Pin
       # the one page we ship; used as manRoot for Linux/macOS (withUnpinEmbed) and
       # winManRoot for Windows, so all three embed exactly Xvnc.1.
-      curatedMan = dataPkgs.runCommand "xvnc-man" { } ''
+      #
+      # The page content is arch-independent (read from the x86_64-linux tigervnc as
+      # a substitutable download), but the *runCommand itself* must run on the build
+      # host: pinning it to x86_64-linux made it unbuildable on the aarch64 CI runner
+      # (which builds the aarch64-linux native + armv7l-linux cross targets) →
+      # "platform mismatch". Parameterize over the per-target pkgs and emit it via
+      # buildPackages.runCommand so its `system` always tracks the build platform.
+      manSrc = "${dataPkgs.tigervnc.man or dataPkgs.tigervnc}/share/man/man1/Xvnc.1.gz";
+      mkCuratedMan = pkgs: pkgs.buildPackages.runCommand "xvnc-man" { } ''
         mkdir -p $out/share/man/man1
-        gzip -dc ${dataPkgs.tigervnc.man or dataPkgs.tigervnc}/share/man/man1/Xvnc.1.gz \
-          > $out/share/man/man1/Xvnc.1
+        gzip -dc ${manSrc} > $out/share/man/man1/Xvnc.1
       '';
+      # Windows always cross-builds on x86_64-linux, so its winManRoot can use the
+      # x86_64-linux executor directly.
+      curatedMan = mkCuratedMan dataPkgs;
 
       # pkgsStatic leaf fixes: libxcvt defaults meson to a shared object that can't
       # link the static-only crt; libfontenc bakes its encodingsdir as an embedded
@@ -189,7 +199,7 @@
         unpins-lib.lib.withUnpinEmbed pkgs {
           primary = "Xvnc";
           man = true;
-          manRoot = "${curatedMan}";
+          manRoot = "${mkCuratedMan pkgs}";
           inherit runtimeStage;
         } (buildServer pkgs);
 
