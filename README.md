@@ -96,7 +96,7 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
     nettle/tasn1/gmp tail and `libc++`) swapped to its `pkgsStatic` `.a`, yielding
     a libSystem-only Mach-O.
   - **Windows** via [Cosmopolitan](https://github.com/jart/cosmopolitan): the
-    same X server compiled to an APE and apelinked to an `Xvnc.exe` PE32+, with
+    same X server, with
     the data served from cosmo's native `/zip` and TLS against a cosmo-slimmed
     GnuTLS.
 
