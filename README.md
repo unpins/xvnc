@@ -83,7 +83,7 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
   Linux the libc file calls are routed through the VFS with `ld --wrap`; on macOS
   (no `--wrap` for Mach-O) the server's own objects are rewritten with
   `llvm-objcopy --redefine-sym` and relinked; on Windows the data lives in the
-  Cosmopolitan APE's native `/zip` store. A live X server reads from the in-binary
+  Cosmopolitan's native `/zip` store. A live X server reads from the in-binary
   mount only — no `/nix/store`, no system XKB/font directory.
 
 - **Three platform paths, one binary each.**
@@ -97,7 +97,7 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
     a libSystem-only Mach-O.
   - **Windows** via [Cosmopolitan](https://github.com/jart/cosmopolitan): the
     same X server compiled to an APE and apelinked to an `Xvnc.exe` PE32+, with
-    the data served from the APE's native `/zip` and TLS against a cosmo-slimmed
+    the data served from cosmo's native `/zip` and TLS against a cosmo-slimmed
     GnuTLS.
 
 - **Headless, viewer/PAM-free.** This ships only the `Xvnc` server — the FLTK
