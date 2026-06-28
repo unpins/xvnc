@@ -190,18 +190,19 @@
             xk = import ./linux-xkbcomp.nix { inherit static pkgs; };
           in import ./linux.nix { inherit static pkgs; xkbcompObj = xk; };
 
-      # mkStandaloneFlake `build`: wrap the server in withUnpinEmbed — one self-EOF
-      # ZIP carrying the xkb/font runtime tree + the Xvnc man page, appended after
-      # the framework's strip, into the upstream-named `Xvnc` binary (the module
-      # already added the lowercase `xvnc` gate symlink). man=true sets
-      # passthru.unpinEmbedsMan so the framework skips its own withMan (one pack).
-      build = pkgs:
-        unpins-lib.lib.withUnpinEmbed pkgs {
-          primary = "Xvnc";
-          man = true;
-          manRoot = "${mkCuratedMan pkgs}";
-          inherit runtimeStage;
-        } (buildServer pkgs);
+      # mkStandaloneFlake `build`: the PRISTINE server (no embed). The xkb/font
+      # runtime tree + the curated Xvnc man page are embedded once, post-build, via
+      # runtimeEmbed.native → unpinEmbedWrap (one self-EOF ZIP, the single embed
+      # path), into the upstream-named `Xvnc` binary (binName; the module already
+      # added the lowercase `xvnc` gate symlink). Windows is cosmo which embeds
+      # xkb/fonts via its own zipos in-build, so only man is added there (the
+      # framework default, sourced from winManRoot = curatedMan).
+      build = pkgs: buildServer pkgs;
+      runtimeEmbed.native = pkgs: base: {
+        man = true;
+        manRoot = "${mkCuratedMan pkgs}";
+        inherit runtimeStage;
+      };
 
       # Windows: the cosmo cross set with the xvnc leaf fixes layered on, feeding
       # the cosmo Xvnc module (its own zipos embed for xkb/fonts + the gate symlink;
@@ -229,7 +230,7 @@
       # graft would carry every dropped tool's page).
       winManRoot = curatedMan;
 
-      inherit build windowsBuild;
+      inherit build windowsBuild runtimeEmbed;
 
       # Xvnc is a server; `-version` prints its TigerVNC banner and exits 0.
       smoke = [ "-version" ];
