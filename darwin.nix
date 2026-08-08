@@ -21,7 +21,20 @@
 # auto-splice to the build host; script `${…}` interpolations use buildPackages.
 { pkgs, xkbcompObj }:
 let
-  static = pkgs.pkgsStatic;
+  # libfontenc bakes its font/encodings dirs into the library as absolute paths,
+  # and libXfont2 links it — so on darwin the shipped Xvnc carried a live store
+  # reference to libfontenc's own output and looked there at runtime, where a
+  # user's Mac has no /nix/store. The linux side already pins both to /zip (see
+  # the flake's staticFixes); this is that pin, and nothing more, so both
+  # platforms resolve fonts through the VFS and neither drags a store path.
+  static = pkgs.pkgsStatic.extend (_: super: {
+    libfontenc = super.libfontenc.overrideAttrs (o: {
+      configureFlags = (o.configureFlags or [ ]) ++ [
+        "--with-fontrootdir=/zip/fonts"
+        "--with-encodingsdir=/zip/fonts/encodings"
+      ];
+    });
+  });
   bpkgs = pkgs.buildPackages;
 
   # gnutls, NLS off (its only gettext use is error-string translation, which would
@@ -284,5 +297,13 @@ in
     ]);
   propagatedBuildInputs = drop junk (o.propagatedBuildInputs or []);
 
-  meta = (o.meta or {}) // { platforms = pkgs.lib.platforms.all; };
+  # nixpkgs sets `broken = isDarwin` on tigervnc because its darwin path only
+  # produces the viewer .dmg; this recipe builds the Xvnc DDX instead and does
+  # link (Mach-O, libSystem-only). Clear it here rather than through a config
+  # escape hatch: nixpkgs dropped `allowBroken` for `problems.handlers`, so the
+  # old hatch went silently dead and took the whole darwin matrix with it.
+  meta = (o.meta or {}) // {
+    platforms = pkgs.lib.platforms.all;
+    broken = false;
+  };
 })

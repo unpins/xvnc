@@ -88,9 +88,13 @@
         let hp = pkgs.stdenv.hostPlatform; bp = pkgs.stdenv.buildPlatform; in
         import nixpkgs ({
           system = bp.system;
+          # `allowBroken` used to sit here too. nixpkgs replaced it with
+          # `problems.handlers`, so it went inert without a word and took the
+          # whole darwin matrix with it (tigervnc is `broken = isDarwin`); the
+          # fix is a per-derivation `meta.broken = false` in darwin.nix, where
+          # it is a claim about this recipe rather than a blanket amnesty.
           config = {
             allowUnsupportedSystem = true;
-            allowBroken = true;
             problems.handlers.python3.broken = "ignore";
           };
         } // lib.optionalAttrs (hp != bp) { crossSystem = { config = hp.config; }; });
@@ -226,6 +230,11 @@
       pkgsAttr = "tigervnc";
       license = "GPL-2.0-or-later";
       optimize = { gc = false; };
+      # The xserver bakes `$out/lib/xorg/protocol.txt` into the binary, but this
+      # build installs only bin/ — the path never exists. Harmless as a
+      # self-reference in the pristine base; once unpinEmbedWrap copies the binary
+      # into its own output it becomes a real dependency on the base. Scrub it.
+      removeReferences = [ "xvnc" ];
       # Windows embeds the same curated single page (else the nixpkgs tigervnc man
       # graft would carry every dropped tool's page).
       winManRoot = curatedMan;
