@@ -19,7 +19,7 @@
 # `pkgs` is the native OR cross darwin pkg set the framework passes; `xkbcompObj`
 # is the matching darwin-xkbcomp.nix blob. nativeBuildInputs list entries
 # auto-splice to the build host; script `${…}` interpolations use buildPackages.
-{ pkgs, xkbcompObj }:
+{ ulib, pkgs, xkbcompObj }:
 let
   # libfontenc bakes its font/encodings dirs into the library as absolute paths,
   # and libXfont2 links it — so on darwin the shipped Xvnc carried a live store
@@ -129,10 +129,10 @@ in
     # cstring in .rodata (a foreign runtime ref surviving strip). NDEBUG drops it.
     vfsdir=$NIX_BUILD_TOP/vfsobj; mkdir -p $vfsdir
     $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF -DUNPIN_VFS_DIRS \
-      -I${./src} -c ${./src/vfs.c} -o $vfsdir/vfs.o
-    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -I${./src} -c ${./src/miniz.c} -o $vfsdir/miniz.o
-    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${./src} \
-      -c ${./src/unpin_zstd.c} -o $vfsdir/unpin_zstd.o
+      -I${ulib.vfsCore} -c ${ulib.vfsCore}/vfs.c -o $vfsdir/vfs.o
+    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -I${ulib.vfsCore} -c ${ulib.vfsCore}/miniz.c -o $vfsdir/miniz.o
+    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${ulib.vfsCore} \
+      -c ${ulib.vfsCore}/unpin_zstd.c -o $vfsdir/unpin_zstd.o
 
     ###### VFS-localized copy of libXfont2 + the xkbcomp blob ######
     cp ${libxfont2NoFt}/lib/libXfont2.a $vfsdir/libXfont2_vfs.a

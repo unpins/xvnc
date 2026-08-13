@@ -28,6 +28,7 @@
   # action-build gate (result/bin/<package-name>) resolves it. No binary rename.
   outputs = { self, unpins-lib, nixpkgs }:
     let
+      ulib = unpins-lib.lib;
       lib = nixpkgs.lib;
 
       # Arch-independent runtime data (XKB rules/symbols text + .pcf.gz bitmap
@@ -187,12 +188,12 @@
         let pkgs = allowUnsup pkgs0; in
         if pkgs.stdenv.hostPlatform.isDarwin then
           let xk = import ./darwin-xkbcomp.nix { inherit pkgs; };
-          in import ./darwin.nix { inherit pkgs; xkbcompObj = xk; }
+          in import ./darwin.nix { inherit ulib pkgs; xkbcompObj = xk; }
         else
           let
             static = pkgs.pkgsStatic.extend staticFixes;
             xk = import ./linux-xkbcomp.nix { inherit static pkgs; };
-          in import ./linux.nix { inherit static pkgs; xkbcompObj = xk; };
+          in import ./linux.nix { inherit ulib static pkgs; xkbcompObj = xk; };
 
       # mkStandaloneFlake `build`: the PRISTINE server (no embed). The xkb/font
       # runtime tree + the curated Xvnc man page are embedded once, post-build, via

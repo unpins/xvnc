@@ -14,7 +14,7 @@
 # `static` is a target static-musl pkg set (native or cross) with staticFixes;
 # `pkgs` is the build-host-aware nixpkgs (build-host tools via pkgs.buildPackages);
 # `xkbcompObj` is the matching linux-xkbcomp.nix blob.
-{ static, pkgs, xkbcompObj }:
+{ ulib, static, pkgs, xkbcompObj }:
 let
   bpkgs = pkgs.buildPackages;
 
@@ -70,10 +70,10 @@ in
   postBuild = ''
     vfsdir=$NIX_BUILD_TOP/vfsobj; mkdir -p $vfsdir
     $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF -DUNPIN_VFS_DIRS \
-      -I${./src} -c ${./src/vfs.c} -o $vfsdir/vfs.o
-    $CC -O2 -DMINIZ_USE_ZSTD -I${./src} -c ${./src/miniz.c} -o $vfsdir/miniz.o
-    $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${./src} \
-      -c ${./src/unpin_zstd.c} -o $vfsdir/unpin_zstd.o
+      -I${ulib.vfsCore} -c ${ulib.vfsCore}/vfs.c -o $vfsdir/vfs.o
+    $CC -O2 -DMINIZ_USE_ZSTD -I${ulib.vfsCore} -c ${ulib.vfsCore}/miniz.c -o $vfsdir/miniz.o
+    $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${ulib.vfsCore} \
+      -c ${ulib.vfsCore}/unpin_zstd.c -o $vfsdir/unpin_zstd.o
 
     export NIX_CFLAGS_COMPILE="$NIX_CFLAGS_COMPILE -Wno-error=int-to-pointer-cast -Wno-error=pointer-to-int-cast"
     export CXXFLAGS="$CXXFLAGS -fpermissive"
