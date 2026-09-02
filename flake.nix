@@ -40,8 +40,7 @@
       # doesn't leave a harvestable Xvnc.1 in share/man, and nixpkgs' tigervnc man
       # output carries pages for every tool we dropped (vncviewer/vncpasswd/…). Pin
       # the one page we ship; used as manRoot for Linux/macOS (withUnpinEmbed) and
-      # winManRoot for Windows, so all three embed Xvnc.1 plus the
-      # lowercase stub below.
+      # winManRoot for Windows, so all three embed exactly Xvnc.1.
       #
       # The page content is arch-independent (read from the x86_64-linux tigervnc as
       # a substitutable download), but the *runCommand itself* must run on the build
@@ -51,17 +50,19 @@
       # buildPackages.runCommand so its `system` always tracks the build platform.
       manSrc = "${dataPkgs.tigervnc.man or dataPkgs.tigervnc}/share/man/man1/Xvnc.1.gz";
       #
-      # Both names, not just the upstream one. The binary keeps `Xvnc` and the
-      # lowercase `xvnc` compat symlink is what the payload ANNOUNCES (nix-lib
-      # turns binName != name into a compat link, and compat links are
-      # announced) — so `xvnc` was a name the user runs, `unpin install` makes a
-      # slot for, and `unpin man xvnc xvnc` cannot find, while `Xvnc.1` sat
-      # right there. We invented the lowercase name for the action-build gate;
-      # documenting it is our job, not upstream's.
+      # ONE page, under the upstream name only. The lowercase `xvnc` compat
+      # symlink is what the payload announces, so it wants a page too — but it
+      # cannot have its own: the macOS store volume FOLDS CASE, and a
+      # `.so man1/Xvnc.1` stub written next to `Xvnc.1` does not sit beside it,
+      # it OVERWRITES it. Probed on the builder: after writing `Xvnc.1` then
+      # `xvnc.1`, the directory holds a single entry, still spelled `Xvnc.1`,
+      # carrying the STUB — the real page destroyed, and the stub's `.so` then
+      # a symlink to itself. That is what the embed's dangling-link guard
+      # caught in CI. The name is declared covered by `manPage` below instead;
+      # any two announced names differing only in case are in this class.
       mkCuratedMan = pkgs: pkgs.buildPackages.runCommand "xvnc-man" { } ''
         mkdir -p $out/share/man/man1
         gzip -dc ${manSrc} > $out/share/man/man1/Xvnc.1
-        printf '.so man1/Xvnc.1\n' > $out/share/man/man1/xvnc.1
       '';
       # Windows always cross-builds on x86_64-linux, so its winManRoot can use the
       # x86_64-linux executor directly.
@@ -249,6 +250,11 @@
       # Windows embeds the same curated single page (else the nixpkgs tigervnc man
       # graft would carry every dropped tool's page).
       winManRoot = curatedMan;
+      # `Xvnc.1` documents the server under both of its names — the upstream
+      # `Xvnc` and the lowercase compat symlink we add for the action-build
+      # gate. Declared rather than duplicated, because on macOS the duplicate
+      # cannot exist (see mkCuratedMan).
+      manPage = "Xvnc";
 
       inherit build windowsBuild runtimeEmbed;
 
