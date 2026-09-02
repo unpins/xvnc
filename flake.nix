@@ -40,7 +40,8 @@
       # doesn't leave a harvestable Xvnc.1 in share/man, and nixpkgs' tigervnc man
       # output carries pages for every tool we dropped (vncviewer/vncpasswd/…). Pin
       # the one page we ship; used as manRoot for Linux/macOS (withUnpinEmbed) and
-      # winManRoot for Windows, so all three embed exactly Xvnc.1.
+      # winManRoot for Windows, so all three embed Xvnc.1 plus the
+      # lowercase stub below.
       #
       # The page content is arch-independent (read from the x86_64-linux tigervnc as
       # a substitutable download), but the *runCommand itself* must run on the build
@@ -49,9 +50,18 @@
       # "platform mismatch". Parameterize over the per-target pkgs and emit it via
       # buildPackages.runCommand so its `system` always tracks the build platform.
       manSrc = "${dataPkgs.tigervnc.man or dataPkgs.tigervnc}/share/man/man1/Xvnc.1.gz";
+      #
+      # Both names, not just the upstream one. The binary keeps `Xvnc` and the
+      # lowercase `xvnc` compat symlink is what the payload ANNOUNCES (nix-lib
+      # turns binName != name into a compat link, and compat links are
+      # announced) — so `xvnc` was a name the user runs, `unpin install` makes a
+      # slot for, and `unpin man xvnc xvnc` cannot find, while `Xvnc.1` sat
+      # right there. We invented the lowercase name for the action-build gate;
+      # documenting it is our job, not upstream's.
       mkCuratedMan = pkgs: pkgs.buildPackages.runCommand "xvnc-man" { } ''
         mkdir -p $out/share/man/man1
         gzip -dc ${manSrc} > $out/share/man/man1/Xvnc.1
+        printf '.so man1/Xvnc.1\n' > $out/share/man/man1/xvnc.1
       '';
       # Windows always cross-builds on x86_64-linux, so its winManRoot can use the
       # x86_64-linux executor directly.
