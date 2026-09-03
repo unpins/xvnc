@@ -5,7 +5,14 @@
 { cosmoPkgs }:
 let
   c = cosmoPkgs;
-  spikeRoot = ../.;
+  # The four in-tree sources, referenced INDIVIDUALLY. `../.` here made the
+  # whole package directory a build input, so ANY edit in the flake — a
+  # comment in linux.nix included — re-hashed this blob and with it the
+  # entire Windows target. linux-xkbcomp.nix always did it per file.
+  makekeysC = ../tools/makekeys.c;
+  keysymC = ../src/unpin_keysym.c;
+  computeC = ../src/unpin_xkbcompute.c;
+  stubsC = ../src/xkbcomp_stubs.c;
   # Cosmo ELF binutils (objects are ELF until apelink), derived from the cosmo
   # cross stdenv — same as the Linux mkXvfb uses static.stdenv.cc.bintools. The
   # unwrapped cosmo bintools ship ar/ld/nm/objcopy that shim to the matching
@@ -32,8 +39,8 @@ c.stdenv.mkDerivation {
     runHook preBuild
     bison --defines=xkbparse.h -o xkbparse.c xkbparse.y
 
-    "''${CC_FOR_BUILD:-$CC_FOR_BUILD}" -O2 ${spikeRoot}/tools/makekeys.c -o makekeys || \
-      "$CC_FOR_BUILD" -O2 ${spikeRoot}/tools/makekeys.c -o makekeys
+    "''${CC_FOR_BUILD:-$CC_FOR_BUILD}" -O2 ${makekeysC} -o makekeys || \
+      "$CC_FOR_BUILD" -O2 ${makekeysC} -o makekeys
     xkbproto=${c.xorg.xorgproto}/include/X11
     ./makekeys $xkbproto/keysymdef.h $xkbproto/XF86keysym.h \
                $xkbproto/Sunkeysym.h $xkbproto/DECkeysym.h \
@@ -62,10 +69,10 @@ c.stdenv.mkDerivation {
       $CC "''${DEF[@]}" ${xkbcInc} -c "$cc.c" -o "$cc.o"
       OBJS="$OBJS $cc.o"
     done
-    $CC "''${DEF[@]}" ${xkbcInc} -c ${spikeRoot}/src/unpin_keysym.c -o unpin_keysym.o
-    $CC "''${DEF[@]}" ${xkbcInc} -c ${spikeRoot}/src/unpin_xkbcompute.c -o unpin_xkbcompute.o
+    $CC "''${DEF[@]}" ${xkbcInc} -c ${keysymC} -o unpin_keysym.o
+    $CC "''${DEF[@]}" ${xkbcInc} -c ${computeC} -o unpin_xkbcompute.o
     $CC -O2 -Wno-implicit-function-declaration -Werror=int-conversion \
-      -c ${spikeRoot}/src/xkbcomp_stubs.c -o xkbcomp_stubs.o
+      -c ${stubsC} -o xkbcomp_stubs.o
     OBJS="$OBJS unpin_keysym.o unpin_xkbcompute.o xkbcomp_stubs.o"
 
     mkdir libx; ( cd libx

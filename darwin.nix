@@ -61,24 +61,15 @@ let
   # cosmo variant is correct for macOS too).
   ddxPatch = ./cosmo/patch-ddxload-cosmo.py;
 
-  # VFS redefine map: route the server's file I/O to vfs.c's _unpinvfs_*. On
-  # x86_64-darwin the stat/dir family carries the $INODE64 asm-label; map both the
-  # suffixed and the bare forms (objcopy ignores absent ones). NEVER define
+  # VFS redefine map: route the server's file I/O to vfs.c's _unpinvfs_*.
+  # Generated from nix-lib's ONE spelling table (lib.vfsBindMap) — the same table
+  # the engine's IR rename reads, so the two back-ends can never drift apart. On
+  # x86_64-darwin the stat/dir family carries the $INODE64 asm-label and arm64 the
+  # bare form; both are emitted (objcopy ignores absent ones). NEVER define
   # _DARWIN_C_SOURCE anywhere (it emits _fopen$DARWIN_EXTSN, which this map misses).
-  redefMap = pkgs.writeText "vfs-redef.map" ''
-    _open _unpinvfs_open
-    _stat$INODE64 _unpinvfs_stat
-    _stat _unpinvfs_stat
-    _lstat$INODE64 _unpinvfs_lstat
-    _lstat _unpinvfs_lstat
-    _access _unpinvfs_access
-    _fopen _unpinvfs_fopen
-    _opendir$INODE64 _unpinvfs_opendir
-    _opendir _unpinvfs_opendir
-    _readdir$INODE64 _unpinvfs_readdir
-    _readdir _unpinvfs_readdir
-    _closedir _unpinvfs_closedir
-  '';
+  redefMap = pkgs.writeText "vfs-redef.map" (ulib.vfsBindMap {
+    syms = [ "open" "stat" "lstat" "access" "fopen" "opendir" "readdir" "closedir" ];
+  });
 
   drop = names: inputs: builtins.filter
     (x: !(builtins.elem (x.pname or x.name or "") names)) inputs;

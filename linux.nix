@@ -18,6 +18,19 @@
 let
   bpkgs = pkgs.buildPackages;
 
+  # 32-bit musl is _REDIR_TIME64: <sys/stat.h> asm-labels stat/lstat to
+  # __stat_time64/__lstat_time64, so the server's stat() references THOSE and a
+  # plain --wrap=stat never fires. Miss the pair and a stat() on a /zip path
+  # reaches the real filesystem on i686/armv7l only, while the 64-bit targets
+  # stay green. vim and gvim have carried it from the start; xvnc, like xvfb,
+  # did not. Latent (measured on the xvfb twin: server startup and a client
+  # font-list on i686 + armv7l make zero /zip syscalls) — this closes the
+  # divergence, it does not fix a live failure.
+  is32 = static.stdenv.hostPlatform.is32bit;
+  time64Def = pkgs.lib.optionalString is32 " -DUNPIN_WRAP_TIME64";
+  time64Wrap = pkgs.lib.optionalString is32
+    " --wrap=__stat_time64 --wrap=__lstat_time64";
+
   drop = names: inputs: builtins.filter
     (x: !(builtins.elem (x.pname or x.name or "") names)) inputs;
   # Xvnc is headless: drop the GL stack (also kills the pkgsStatic SDL3-broken
@@ -69,7 +82,7 @@ in
   #     probes would otherwise link vfs.o / hit undefined __wrap_*).
   postBuild = ''
     vfsdir=$NIX_BUILD_TOP/vfsobj; mkdir -p $vfsdir
-    $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF -DUNPIN_VFS_DIRS \
+    $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF -DUNPIN_VFS_DIRS${time64Def} \
       -I${ulib.vfsCore} -c ${ulib.vfsCore}/vfs.c -o $vfsdir/vfs.o
     $CC -O2 -DMINIZ_USE_ZSTD -I${ulib.vfsCore} -c ${ulib.vfsCore}/miniz.c -o $vfsdir/miniz.o
     $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${ulib.vfsCore} \
@@ -105,7 +118,7 @@ in
 
     export NIX_LDFLAGS="$NIX_LDFLAGS \
       --wrap=open --wrap=stat --wrap=lstat --wrap=access \
-      --wrap=fopen --wrap=opendir --wrap=readdir --wrap=closedir \
+      --wrap=fopen --wrap=opendir --wrap=readdir --wrap=closedir${time64Wrap} \
       $vfsdir/vfs.o $vfsdir/miniz.o $vfsdir/unpin_zstd.o \
       ${xkbcompObj}/xkbcomp_localized.o"
 
