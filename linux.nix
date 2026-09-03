@@ -42,7 +42,18 @@ let
            # Runtime tooling for the dropped vncserver/vncviewer wrappers — Xvnc
            # itself never uses them. They build on native/i686 but fail cross on
            # some arches (perl/openssh ld errors), so drop them everywhere.
-           "perl" "openssh" "xterm" "xauth" "tab-window-manager" "xsetroot" ];
+           "perl" "openssh" "xterm" "xauth" "tab-window-manager" "xsetroot"
+           # Secure RPC (SUN-DES-1) is a build-only ghost here: the xserver's
+           # --enable-secure-rpc probe is `auto` and has never succeeded on
+           # static-musl, so the shipped binary carries none of it — measured on
+           # the gcc-era artifact, which has 0 occurrences of SUN-DES-1, authdes,
+           # netname or rpcauth. libtirpc arrives via propagatedBuildInputs and
+           # drags the whole krb5 build in for nothing, and under the engine krb5
+           # does not even link: its krb5kdc LTO link dies on `undefined symbol:
+           # malloc`, with lld noting that the near-miss `calloc` IS defined in
+           # the same .lto.o. Cutting the dep is the fix; `--disable-secure-rpc`
+           # below pins the probe so the result is stated, not stumbled into.
+           "libtirpc" ];
 in
 (static.tigervnc.override {
   # Cut the wayland/pipewire/SDL3 chain at the arg level.
@@ -81,11 +92,16 @@ in
   #   - VFS objects + --wrap added to NIX_LDFLAGS AFTER ./configure (its cc-link
   #     probes would otherwise link vfs.o / hit undefined __wrap_*).
   postBuild = ''
+    # -DNDEBUG: miniz's MZ_ASSERT is plain assert(), and clang keeps its __FILE__
+    # cstring — the vfsCore store path — in .rodata, where it survives strip as a
+    # live runtime reference. gcc -O2 elided it, so this build was ref-clean
+    # without NDEBUG until the engine put Linux on clang; darwin has carried the
+    # flag from the start for exactly this reason.
     vfsdir=$NIX_BUILD_TOP/vfsobj; mkdir -p $vfsdir
-    $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF -DUNPIN_VFS_DIRS${time64Def} \
+    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF -DUNPIN_VFS_DIRS${time64Def} \
       -I${ulib.vfsCore} -c ${ulib.vfsCore}/vfs.c -o $vfsdir/vfs.o
-    $CC -O2 -DMINIZ_USE_ZSTD -I${ulib.vfsCore} -c ${ulib.vfsCore}/miniz.c -o $vfsdir/miniz.o
-    $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${ulib.vfsCore} \
+    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -I${ulib.vfsCore} -c ${ulib.vfsCore}/miniz.c -o $vfsdir/miniz.o
+    $CC -O2 -DNDEBUG -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${ulib.vfsCore} \
       -c ${ulib.vfsCore}/unpin_zstd.c -o $vfsdir/unpin_zstd.o
 
     export NIX_CFLAGS_COMPILE="$NIX_CFLAGS_COMPILE -Wno-error=int-to-pointer-cast -Wno-error=pointer-to-int-cast"
@@ -99,6 +115,13 @@ in
     ${bpkgs.python3.interpreter} ${./patch-ddxload.py}
 
     autoreconf -vfi
+    # XORG_PROG_RAWCPP feeds the raw preprocessor a conftest on STDIN with no
+    # filename; the engine cc-wrapper's `cpp` answers "no input files" and the
+    # probe aborts ("defines unix with or without -undef"). Same fix, same
+    # reason, as the libx11 leaf override in flake.nix — RAWCPP only
+    # preprocesses the xserver's host-independent .man text, so the build-host
+    # cpp is the right tool. (xvfb is meson and never runs this probe.)
+    export RAWCPP=${bpkgs.stdenv.cc}/bin/cpp
     ./configure $configureFlags --disable-devel-docs --disable-docs \
         --disable-xorg --disable-xnest --disable-xvfb --disable-dmx \
         --disable-xwin --disable-xephyr --disable-kdrive --with-pic \
@@ -108,6 +131,7 @@ in
         --disable-xwayland \
         --disable-config-dbus --disable-config-udev --disable-config-hal \
         --disable-xevie \
+        --disable-secure-rpc \
         --disable-dri --disable-dri2 --disable-dri3 --disable-glx \
         --enable-install-libxf86config \
         --prefix="$out" --disable-unit-tests \

@@ -86,6 +86,27 @@
             "--with-encodingsdir=/zip/fonts/encodings"
           ];
         });
+        # libx11's XORG_PROG_RAWCPP probe feeds the raw preprocessor no input;
+        # the engine cc-wrapper's `cpp` errors ("no input files") and the probe
+        # aborts ("defines unix with or without -undef") because clang keeps
+        # `unix` defined even under -undef. Point RAWCPP at the build-host cpp,
+        # which honors it; RAWCPP only preprocesses X11's host-independent
+        # locale/compose text, so libx11 still links in as the same static .a.
+        # Seventh copy of this fix in the catalog (ddcutil/sox/vorbis-tools/
+        # poppler-utils/fastfetch/xvfb) — it belongs in nix-lib's engine set, but
+        # moving it there re-hashes every libx11 consumer and is its own job.
+        libx11 = superP.libx11.overrideAttrs (_: {
+          RAWCPP = "${selfP.buildPackages.stdenv.cc}/bin/cpp";
+        });
+        # pixman's test/demo programs are not shipped, and `matrix-test` does its
+        # reference math in `__float128` — whose soft-float builtins compiler-rt
+        # cannot supply on i386 (they are gated on `__int128`, which 32-bit x86
+        # lacks; libgcc had its own). Under the engine the i686 link therefore
+        # fails on __divtf3/__floatditf/__trunctfxf2/…. The cosmo leaf fixes below
+        # already drop them for the same reason.
+        pixman = superP.pixman.overrideAttrs (o: {
+          mesonFlags = (o.mesonFlags or [ ]) ++ [ "-Dtests=disabled" "-Ddemos=disabled" ];
+        });
       } // lib.optionalAttrs (superP.stdenv.hostPlatform.parsed.cpu.name == "riscv64") {
         libjpeg_turbo = superP.libjpeg_turbo.overrideAttrs (o: {
           cmakeFlags = (o.cmakeFlags or [ ]) ++ [ "-DWITH_SIMD=0" ];
@@ -202,8 +223,11 @@
           in import ./darwin.nix { inherit ulib pkgs; xkbcompObj = xk; }
         else
           let
-            static = pkgs.pkgsStatic.extend staticFixes;
-            xk = import ./linux-xkbcomp.nix { inherit ulib static pkgs; engine = false; };
+            static = (ulib.enginePkgsStaticFor {
+              inherit pkgs;
+              toolchain = ulib.unpinToolchain pkgs.stdenv.buildPlatform.system;
+            }).extend staticFixes;
+            xk = import ./linux-xkbcomp.nix { inherit ulib static pkgs; engine = true; };
           in import ./linux.nix { inherit ulib static pkgs; xkbcompObj = xk; };
 
       # mkStandaloneFlake `build`: the PRISTINE server (no embed). The xkb/font
