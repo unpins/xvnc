@@ -203,7 +203,7 @@
         else
           let
             static = pkgs.pkgsStatic.extend staticFixes;
-            xk = import ./linux-xkbcomp.nix { inherit static pkgs; };
+            xk = import ./linux-xkbcomp.nix { inherit ulib static pkgs; engine = false; };
           in import ./linux.nix { inherit ulib static pkgs; xkbcompObj = xk; };
 
       # mkStandaloneFlake `build`: the PRISTINE server (no embed). The xkb/font
