@@ -78,9 +78,8 @@ in
   cmakeFlags = (o.cmakeFlags or []) ++ [
     "-DBUILD_VIEWER=0" "-DENABLE_NLS=0" "-DENABLE_H264=0"
     "-DENABLE_GNUTLS=ON" "-DENABLE_NETTLE=ON"
-    # cosmo zlib splits the static .a into a separate `static` output (the `out`
-    # lib dir is empty), so CMake's FindZLIB can't auto-locate ZLIB_LIBRARY.
-    "-DZLIB_LIBRARY=${c.zlib.static}/lib/libz.a"
+    # Pinned rather than left to FindZLIB, which would rather have a `.so`.
+    "-DZLIB_LIBRARY=${c.zlib}/lib/libz.a"
     "-DZLIB_INCLUDE_DIR=${c.zlib.dev}/include"
     "-DGNUTLS_LIBRARY=${c.gnutls.out}/lib/libgnutls.a"
     "-DGNUTLS_INCLUDE_DIR=${c.gnutls.dev}/include"
@@ -181,7 +180,7 @@ in
       -L${c.libtasn1}/lib -ltasn1 \
       -L${c.nettle}/lib -lhogweed -lnettle \
       -L${c.gmp}/lib -lgmp \
-      -L${c.zlib.static}/lib -lz \
+      -L${c.zlib}/lib -lz \
       ${xkbcompObj}/xkbcomp_localized.o"
 
     make TIGERVNC_SRC=$src TIGERVNC_BUILDDIR=`pwd`/../.. -j$NIX_BUILD_CORES
