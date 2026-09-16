@@ -82,8 +82,21 @@ c.stdenv.mkDerivation {
         xkberrs.o xkbatom.o )
 
     ${ld} -r -o xkbcomp_all.o $OBJS libx/*.o
+    # --remove-section=.eh_frame: the `ld -r` output's .eh_frame is 27436
+    # bytes, not a multiple of its 8-byte alignment. Cosmo's ape.lds folds
+    # every .eh_frame into .data verbatim, so the next input section is padded
+    # with 4 zero bytes, which the unwinder reads as the end of the table. It
+    # stops there, before the libc++abi/libunwind entries linked after the
+    # blob, so in a C++ server (xvnc) no exception could be caught: the first
+    # `throw` -- one malformed message from any client -- aborted the process.
+    # The blob is C and runs in a forked child, so nothing unwinds through it.
     ${objcopy} --keep-global-symbol=unpin_xkbcomp_main \
+      --remove-section=.eh_frame \
       xkbcomp_all.o xkbcomp_localized.o
+    sections=$(${bintools}/bin/readelf -SW xkbcomp_localized.o)
+    if ! grep -q '\.text' <<<"$sections" || grep -q '\.eh_frame' <<<"$sections"; then
+      echo "FATAL: blob section table unreadable or still carries .eh_frame" >&2; exit 1
+    fi
 
     echo "=== exported globals (want: only unpin_xkbcomp_main) ==="
     defined=$(${nm} -g --defined-only xkbcomp_localized.o | awk '{print $NF}')

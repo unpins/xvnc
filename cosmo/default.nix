@@ -156,7 +156,16 @@ in
         --with-xkb-path=/zip/xkb \
         --with-xkb-bin-directory=/usr/bin \
         --with-xkb-output=/tmp \
-        --with-default-font-path=/zip/fonts/misc
+        --with-default-font-path=/zip/fonts/misc \
+        --enable-listen-tcp --disable-listen-unix --disable-listen-local
+
+    # Listen on TCP, not on a Unix socket, unless told otherwise (the three
+    # --*-listen-* flags above). The stock default is Unix + local only, and on
+    # Windows neither comes up: xtrans refuses to create /tmp/.X11-unix behind a
+    # `!defined(WIN32)` check a cosmo build does not satisfy, so the server
+    # exited `Cannot establish any listening sockets` and `Xvnc :1` failed
+    # outright; only `-listen tcp` worked. Clients reach display :N at port
+    # 6000+N. Same defect and fix as the xvfb cosmo build.
 
     # Cosmo presents SCM_RIGHTS at build time, so configure turns XTRANS_SEND_FDS
     # on and the transport uses recvmsg/sendmsg w/ an SCM_RIGHTS control buffer —
@@ -184,6 +193,12 @@ in
       ${xkbcompObj}/xkbcomp_localized.o"
 
     make TIGERVNC_SRC=$src TIGERVNC_BUILDDIR=`pwd`/../.. -j$NIX_BUILD_CORES
+
+    # TigerVNC reports protocol and auth errors with C++ exceptions. A gap in
+    # the unwind table left every one of them uncatchable on Windows, so a
+    # single bad message from an unauthenticated client aborted the server.
+    # Checked on the ELF, before apelink turns it into a PE.
+    ${np.python3.interpreter} ${./check-eh-frame.py} hw/vnc/Xvnc "$NM"
     popd
   '';
 

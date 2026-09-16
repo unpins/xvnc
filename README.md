@@ -20,8 +20,8 @@ The binary keeps its upstream name `Xvnc`; a lowercase `xvnc` is installed as a 
 Run `Xvnc` with [unpin](https://github.com/unpins/unpin):
 
 ```bash
-unpin Xvnc :1 -geometry 1280x1024 -depth 24 -SecurityTypes None &  # display :1 → VNC port 5901
-DISPLAY=:1 your-gui-program                                         # point clients at it
+unpin xvnc :1 -geometry 1280x1024 -depth 24 -SecurityTypes None -localhost &  # display :1 → VNC port 5901
+DISPLAY=:1 your-gui-program                                                    # point clients at it
 # then attach any VNC viewer to localhost:5901
 ```
 
@@ -31,20 +31,35 @@ To install it onto your PATH:
 unpin install xvnc
 ```
 
+`-SecurityTypes None` lets anyone who can reach the VNC port use the desktop;
+`-localhost` accepts connections from this machine only. Password login
+(`VncAuth`, and `TLSVnc`/`X509Vnc` over TLS) reads a password file
+(`-PasswordFile`) made with TigerVNC's `vncpasswd`, which is not included.
+Login with a system account (`Plain`, `TLSPlain`, `X509Plain`) is not
+available: this build has no PAM, and those types reject every client.
+
+On Windows the server listens on TCP instead of a local socket, so display `:N`
+is port `6000+N` and X clients connect with `DISPLAY=127.0.0.1:1`.
+
+`unpin man xvnc Xvnc` covers the VNC options (`-SecurityTypes`, `-rfbport`,
+`-PasswordFile`, …). The options every X server shares (`-listen`, `-fp`, `-ac`,
+…) are in upstream's
+[Xserver(1)](https://www.x.org/releases/current/doc/man/man1/Xserver.1.xhtml).
+
 Everything an X server normally reads from disk is **embedded in the binary** —
 no `XKB`/keymap directory, no font path, no companion files to ship:
 
 - **Keyboard layouts (XKB).** The full
   [`xkeyboard-config`](https://www.freedesktop.org/wiki/Software/XKeyboardConfig/)
   tree is embedded and the keymap compiler (`xkbcomp`) runs **in-process** — any
-  RMLVO layout compiles from the in-binary tree with no external `xkbcomp` and
-  nothing written to `/tmp`.
+  RMLVO layout compiles from the in-binary tree with no external `xkbcomp`.
 - **Core fonts.** `fixed`, `cursor`, and the `misc` bitmap fonts are embedded at
   the default font path, so clients that ask for the built-in fonts work with no
   font server or font directory.
-- **TLS built in.** The VNC TLS security types (`X509`, `TLSVnc`, `RA2`) are
-  linked statically against GnuTLS, so encrypted sessions work with no shared
-  library to ship — bring your own x509 cert/key.
+- **Encryption built in.** The TLS security types (`TLSNone`, `TLSVnc`,
+  `X509None`, `X509Vnc`) and RSA-AES (`RA2`, `RA2ne`, …) are linked in
+  statically, so encrypted sessions need no shared library — bring your own
+  x509 cert/key (`-X509Cert`, `-X509Key`) for the `X509*` types.
 
 ## Build locally
 
@@ -56,7 +71,7 @@ nix build github:unpins/xvnc
 Or run directly:
 
 ```bash
-nix run github:unpins/xvnc -- :1 -geometry 1024x768 -SecurityTypes None
+nix run github:unpins/xvnc -- :1 -geometry 1024x768 -SecurityTypes None -localhost
 ```
 
 The first invocation will offer to add the [unpins.cachix.org](https://unpins.cachix.org) substituter so most pulls come pre-built.
@@ -73,8 +88,10 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
   (xkbcomp's sources plus the display-free struct/IO members lifted straight from
   `libX11`/`libxkbfile`) is bundled into one self-contained object that exports a
   single entry point and depends on nothing but libc. `RunXkbComp` is patched to
-  call it in-process (fork + an in-memory spec/`.xkm` handoff), so the full RMLVO
-  → keymap pipeline runs from the embedded `xkeyboard-config` tree.
+  call it in-process (fork, then the spec and the compiled `.xkm` are handed
+  back in memory on Linux and through short-lived temp files on macOS and
+  Windows), so the full RMLVO → keymap pipeline runs from the embedded
+  `xkeyboard-config` tree.
 
 - **Embedded data via the VFS (unpin-vfs).** The server opens its XKB rules,
   symbols, and font files with `open`/`fopen`/`opendir`. The `xkeyboard-config`
@@ -96,12 +113,11 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
     nettle/tasn1/gmp tail and `libc++`) swapped to its `pkgsStatic` `.a`, yielding
     a libSystem-only Mach-O.
   - **Windows** via [Cosmopolitan](https://github.com/jart/cosmopolitan): the
-    same X server, with
-    the data served from cosmo's native `/zip` and TLS against a cosmo-slimmed
-    GnuTLS.
+    same X server, with the data served from cosmo's native `/zip` and TLS
+    against a cosmo-slimmed GnuTLS. It listens on TCP by default and has no
+    `MIT-SHM` (Windows has no System V shared memory).
 
 - **Headless, viewer/PAM-free.** This ships only the `Xvnc` server — the FLTK
   viewer, the `vncserver`/`vncpasswd`/`x0vncserver` wrapper tools, PAM, Wayland,
   and H.264 are all dropped. GL/GLX/DRI3 are disabled; it renders to memory and
   needs no root, KMS, or DRM.
-```
