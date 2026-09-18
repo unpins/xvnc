@@ -93,28 +93,16 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
   Windows), so the full RMLVO → keymap pipeline runs from the embedded
   `xkeyboard-config` tree.
 
-- **Embedded data via the VFS (unpin-vfs).** The server opens its XKB rules,
-  symbols, and font files with `open`/`fopen`/`opendir`. The `xkeyboard-config`
-  tree and core bitmap fonts are packed into a ZIP appended at the binary's EOF
-  and served by the shared [unpin-vfs](https://github.com/unpins/unpin) core. On
-  Linux the libc file calls are routed through the VFS with `ld --wrap`; on macOS
-  (no `--wrap` for Mach-O) the server's own objects are rewritten with
-  `llvm-objcopy --redefine-sym` and relinked; on Windows the data lives in the
-  Cosmopolitan's native `/zip` store. A live X server reads from the in-binary
-  mount only — no `/nix/store`, no system XKB/font directory.
+- **Embedded data.** The XKB rules and symbols (the `xkeyboard-config` tree)
+  and the core bitmap fonts are packed into the binary. A live X server reads
+  them from there only — no `/nix/store`, no system XKB/font directory.
 
-- **Three platform paths, one binary each.**
-  - **Linux** (static-musl, every arch): TigerVNC trimmed to the Xvnc DDX, linked
-    statically, XKB + fonts embedded, `file` reports `statically linked`, no
-    `/nix/store` closure.
-  - **macOS** (Mach-O, libSystem-only): not pure `pkgsStatic` (the X stack's
-    meson/python toolchain can't link statically on macOS) — built with the
-    dynamic darwin stdenv but with every linked library (including GnuTLS and its
-    nettle/tasn1/gmp tail and `libc++`) swapped to its `pkgsStatic` `.a`, yielding
-    a libSystem-only Mach-O.
+- **Platforms, one binary each.**
+  - **Linux** (every arch): TigerVNC trimmed to the Xvnc server, statically
+    linked, XKB + fonts embedded.
+  - **macOS**: every library, GnuTLS and `libc++` included, is built in.
   - **Windows** via [Cosmopolitan](https://github.com/jart/cosmopolitan): the
-    same X server, with the data served from cosmo's native `/zip` and TLS
-    against a cosmo-slimmed GnuTLS. It listens on TCP by default and has no
+    same X server, with TLS. It listens on TCP by default and has no
     `MIT-SHM` (Windows has no System V shared memory).
 
 - **Headless, viewer/PAM-free.** This ships only the `Xvnc` server — the FLTK
