@@ -86,18 +86,6 @@
             "--with-encodingsdir=/zip/fonts/encodings"
           ];
         });
-        # libx11's XORG_PROG_RAWCPP probe feeds the raw preprocessor no input;
-        # the engine cc-wrapper's `cpp` errors ("no input files") and the probe
-        # aborts ("defines unix with or without -undef") because clang keeps
-        # `unix` defined even under -undef. Point RAWCPP at the build-host cpp,
-        # which honors it; RAWCPP only preprocesses X11's host-independent
-        # locale/compose text, so libx11 still links in as the same static .a.
-        # Seventh copy of this fix in the catalog (ddcutil/sox/vorbis-tools/
-        # poppler-utils/fastfetch/xvfb) — it belongs in nix-lib's engine set, but
-        # moving it there re-hashes every libx11 consumer and is its own job.
-        libx11 = superP.libx11.overrideAttrs (_: {
-          RAWCPP = "${selfP.buildPackages.stdenv.cc}/bin/cpp";
-        });
         # pixman's test/demo programs are not shipped, and `matrix-test` does its
         # reference math in `__float128` — whose soft-float builtins compiler-rt
         # cannot supply on i386 (they are gated on `__int128`, which 32-bit x86
