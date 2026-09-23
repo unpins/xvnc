@@ -1,8 +1,15 @@
 # Darwin (macOS) Xvnc server derivation — self-contained, libSystem-only Mach-O
 # with the in-process xkbcomp + the /zip VFS linked in. Merges the autotools link
 # path (link shim, gnutls static tail, unix/ forcing, libSystem-only gate) with
-# the VFS-localization technique from the shipped xvfb darwin port (vfs.c +
-# llvm-objcopy --redefine-syms; macOS ld has no --wrap).
+# the VFS-localization technique from the shipped xvfb darwin port (vfs.c, with
+# no `ld --wrap`: macOS has none). The COMPILER is the engine
+# (unpin-llvm): the adapter stdenv replaces the cc over the DYNAMIC darwin
+# stdenv this module already uses — macOS has no static libSystem, and its
+# pkgsStatic collapses buildPackages into itself — so the link model is
+# untouched and only the code generation moves. -flto makes the build tree's
+# objects bitcode, so they bind through the IR rename (ulib.vfsBindFns) while
+# libXfont2.a and the xkbcomp blob, native Mach-O from off-engine derivations,
+# keep llvm-objcopy --redefine-syms (ulib.vfsBindMap). One table, two back-ends.
 #
 # Unlike xvfb (meson + `ninja -t commands` relink), TigerVNC's xserver is
 # AUTOTOOLS. We avoid capturing/replaying the libtool link command: the file-I/O
@@ -27,6 +34,31 @@ let
   # user's Mac has no /nix/store. The linux side already pins both to /zip (see
   # the flake's staticFixes); this is that pin, and nothing more, so both
   # platforms resolve fonts through the VFS and neither drags a store path.
+  # gmp without its hand-written x86_64 assembly.
+  #
+  # The final link is ld64.lld now (Apple's ld64 is what this module used before
+  # the engine, and it is not on the engine's PATH). lld's Mach-O backend refuses
+  # the 1-byte BRANCH relocation gmp's asm carries — "BRANCH relocation has width
+  # 1 bytes, but must be 4 bytes at offset 15 of __TEXT,__text" in x86_64_add_n.o
+  # and its neighbours. Rebuilding gmp with the engine does NOT help: the same
+  # error then fires inside gmp's own build, so the relocation is what the source
+  # assembles to, not an artefact of which assembler ran.
+  #
+  # So the asm goes and gmp falls back to its portable C mpn. That is a REAL
+  # cost, not a no-op: gmp's bignum routines get slower, and gnutls reaches them
+  # through nettle/hogweed for the public-key half of the TLS handshake — so a
+  # VNC connection's setup pays it. Everything after the handshake is symmetric
+  # crypto and untouched, and the linux binaries keep the assembly (ELF ld.lld
+  # takes the same relocation without complaint).
+  # `--enable-fat` has to go with it: fat means "pick the mpn routines for this
+  # CPU at run time", which is a thing only the assembly implementations do, and
+  # gmp's configure refuses the pair outright ("when doing a fat build,
+  # disabling assembly will not work").
+  gmpNoAsm = static.gmp.overrideAttrs (o: {
+    configureFlags =
+      builtins.filter (f: f != "--enable-fat") (o.configureFlags or [ ])
+      ++ [ "--disable-assembly" ];
+  });
   static = pkgs.pkgsStatic.extend (_: super: {
     libfontenc = super.libfontenc.overrideAttrs (o: {
       configureFlags = (o.configureFlags or [ ]) ++ [
@@ -36,11 +68,30 @@ let
     });
   });
   bpkgs = pkgs.buildPackages;
+  multitool = ulib.llvmMultitool pkgs.stdenv.buildPlatform.system;
+
+  # `hostPkgs = pkgs` is the point: engineStdenv's default wraps pkgsStatic,
+  # which on darwin is where meson/python3 cannot follow. Wrapping the dynamic
+  # set swaps the compiler and nothing else.
+  engStdenv = ulib.unpinAdapterStdenv {
+    inherit pkgs;
+    hostPkgs = pkgs;
+    target = pkgs.stdenv.hostPlatform.config;
+    native = pkgs.stdenv.buildPlatform.system == pkgs.stdenv.hostPlatform.system;
+    lto = true;
+    captureLinks = true;
+  };
 
   # gnutls, NLS off (its only gettext use is error-string translation, which would
   # drag the dynamic libintl.8.dylib — gettext is a darwin-bootstrap pkg, can't be
   # overlaid static). VNC error messages stay English.
-  gnutlsStatic = static.gnutls.overrideAttrs (o: {
+  # hogweed is gmp-backed, so nettle has to see the same gmp that ends up on the
+  # link — two gmps in one closure is the shape that resolves at link time and
+  # surprises at run time.
+  nettleGmp = static.nettle.override { gmp = gmpNoAsm; };
+  gnutlsStatic = (static.gnutls.override {
+    gmp = gmpNoAsm; nettle = nettleGmp;
+  }).overrideAttrs (o: {
     configureFlags = (o.configureFlags or []) ++ [ "--disable-nls" ];
   });
   # libXfont2 without the FreeType backend (PCF bitmap fonts only).
@@ -52,7 +103,8 @@ let
   # The dynamic darwin set with the linked libs swapped to their pkgsStatic .a
   # variants (so tigervnc + the autotools xserver fold them static).
   opkgs = pkgs.extend (self: super: {
-    inherit (static) pixman libjpeg_turbo nettle;
+    inherit (static) pixman libjpeg_turbo;
+    nettle = nettleGmp;
     gnutls = gnutlsStatic;
     libxfont_2 = libxfont2NoFt;
   });
@@ -67,9 +119,9 @@ let
   # x86_64-darwin the stat/dir family carries the $INODE64 asm-label and arm64 the
   # bare form; both are emitted (objcopy ignores absent ones). NEVER define
   # _DARWIN_C_SOURCE anywhere (it emits _fopen$DARWIN_EXTSN, which this map misses).
-  redefMap = pkgs.writeText "vfs-redef.map" (ulib.vfsBindMap {
-    syms = [ "open" "stat" "lstat" "access" "fopen" "opendir" "readdir" "closedir" ];
-  });
+  # One list, both back-ends.
+  vfsSyms = [ "open" "stat" "lstat" "access" "fopen" "opendir" "readdir" "closedir" ];
+  redefMap = pkgs.writeText "vfs-redef.map" (ulib.vfsBindMap { syms = vfsSyms; });
 
   drop = names: inputs: builtins.filter
     (x: !(builtins.elem (x.pname or x.name or "") names)) inputs;
@@ -81,6 +133,7 @@ in
 (opkgs.tigervnc.override {
   waylandSupport = false;
   openssh = bpkgs.openssh;   # build-host (interpolated into vncviewer.cxx postPatch)
+  stdenv = engStdenv;
 }).overrideAttrs (o: {
   pname = "xvnc";
   # List entries auto-splice to the build host (xtrans/util-macros/font-util carry
@@ -164,6 +217,13 @@ in
     ${bpkgs.python3.interpreter} ${ddxPatch}
 
     autoreconf -vfi
+    # XORG_PROG_RAWCPP feeds the raw preprocessor a conftest on STDIN with no
+    # filename; the engine cc-wrapper's `cpp` answers "no input files" and the
+    # probe aborts ("defines unix with or without -undef"). The same line the
+    # linux module carries, for the same reason — RAWCPP only preprocesses the
+    # xserver's host-independent .man text, so the build-host cpp (the one that
+    # served this build before the engine) is the right tool.
+    export RAWCPP=${bpkgs.stdenv.cc}/bin/cpp
     ./configure $configureFlags --disable-devel-docs --disable-docs \
         --disable-xorg --disable-xnest --disable-xvfb --disable-dmx \
         --disable-xwin --disable-xephyr --disable-kdrive --with-pic \
@@ -183,22 +243,29 @@ in
         --with-default-font-path=/zip/fonts/misc
 
     # Static-fold link flags — set AFTER ./configure so its cc-link probes aren't
-    # perturbed. gnutls's transitive .a tail + static libc++ fold (jbig2 recipe):
-    # the darwin allow-list rejects /usr/lib/libc++.1.dylib.
+    # perturbed. gnutls's transitive .a tail rides here; libc++ does NOT. It used
+    # to: nixpkgs' pkgsStatic libc++.a was folded in because the darwin allow-list
+    # rejects /usr/lib/libc++.1.dylib. The engine's clang++ compiles against the
+    # libc++ HEADERS in its own sysroot, so feeding it a differently-built
+    # libc++.a is a header/library mismatch waiting to surface at runtime — it
+    # links its own, statically. If that ever regresses, the allow-list gate
+    # below names the dylib and fails the build rather than shipping it.
     mkdir -p "$TMPDIR/cxx-static"
-    ln -sf ${static.libcxx}/lib/libc++.a    "$TMPDIR/cxx-static/libc++.a"
-    ln -sf ${static.libcxx}/lib/libc++.a    "$TMPDIR/cxx-static/libstdc++.a"
-    ln -sf ${static.libcxx}/lib/libc++abi.a "$TMPDIR/cxx-static/libc++abi.a"
-    ln -sf ${static.zlib}/lib/libz.a        "$TMPDIR/cxx-static/libz.a"
-    # The VFS runtime objects + the localized xkbcomp blob ride on NIX_LDFLAGS for
-    # BOTH links: the patched RunXkbComp references _unpin_xkbcomp_main (blob) and
-    # the blob references _unpinvfs_* (vfs.o), so even the first link needs them.
+    ln -sf ${static.zlib}/lib/libz.a "$TMPDIR/cxx-static/libz.a"
     # libiconv is resolved dead-last by the link shim (fix (5)) — libtool reorders
     # -lunistring past any -liconv we could place in NIX_LDFLAGS here.
     export NIX_LDFLAGS="-search_paths_first -dead_strip_dylibs \
       -L$TMPDIR/cxx-static $NIX_LDFLAGS \
-      -ltasn1 -lidn2 -lunistring -lhogweed -lnettle -lgmp -lc++abi \
-      -framework CoreFoundation -framework Security \
+      -ltasn1 -lidn2 -lunistring -lhogweed -lnettle -lgmp \
+      -framework CoreFoundation -framework Security"
+    # The OBJECT paths go through NIX_CFLAGS_LINK, not NIX_LDFLAGS: the cc
+    # wrapper `-Wl,`-prefixes every NIX_LDFLAGS token that does not start with
+    # `-L/`, and the engine clang hands `-Wl,<path>` to ld64.lld whole —
+    # "cannot open …/-Wl,/nix/store/…/vfs.o". It is added raw here, and still
+    # reaches BOTH links, which is what the first one needs: the patched
+    # RunXkbComp references _unpin_xkbcomp_main (blob) and the blob references
+    # _unpinvfs_* (vfs.o).
+    export NIX_CFLAGS_LINK="''${NIX_CFLAGS_LINK:-} \
       $vfsdir/vfs.o $vfsdir/miniz.o $vfsdir/unpin_zstd.o $vfsdir/blob_vfs.o"
 
     # First link: Xvnc builds with the blob+vfs present (so RunXkbComp resolves),
@@ -206,14 +273,15 @@ in
     # redefined). Throwaway — we overwrite it after redefining those archives.
     make TIGERVNC_SRC=$src TIGERVNC_BUILDDIR=`pwd`/../.. -j$NIX_BUILD_CORES
 
-    ###### redefine file I/O in the build-tree archives + DDX objects, relink ######
-    echo "=== redefining file I/O in build-tree archives + hw/vnc objects ==="
-    find . -name '*.a' -print | while read -r a; do
-      llvm-objcopy --redefine-syms=${redefMap} "$a" || true
-    done
-    for ob in $(find hw/vnc -name '*.o'); do
-      llvm-objcopy --redefine-syms=${redefMap} "$ob" || true
-    done
+    ###### rename file I/O in the build-tree archives + DDX objects, relink ######
+    # Bitcode, so `objcopy --redefine-syms` has no symtab to reach and reports
+    # them as not a valid object file. Same rename, in the IR.
+    MT=${multitool}
+    ${ulib.vfsBindFns { syms = vfsSyms; }}
+    ${ulib.vfsBindArchiveFns}
+    echo "=== renaming file I/O in build-tree archives + hw/vnc objects (IR) ==="
+    find . -name '*.a' -print | while read -r a; do bcrewriteArchive "$a"; done
+    for ob in $(find hw/vnc -name '*.o'); do isbc "$ob" && bcrewrite "$ob"; done
 
     # Route the redefined server archives' font reads through the VFS: let the
     # shim -force_load the redefined libXfont2_vfs.a (order-independent → it wins
@@ -226,9 +294,14 @@ in
     make TIGERVNC_SRC=$src TIGERVNC_BUILDDIR=`pwd`/../.. -C hw/vnc
 
     ###### gates ######
-    echo "=== otool -L hw/vnc/Xvnc ==="
-    otool -L hw/vnc/Xvnc || true
-    bad=$(otool -L hw/vnc/Xvnc | tail -n +2 | awk '{print $1}' \
+    echo "=== dylibs used by hw/vnc/Xvnc ==="
+    # llvm-objdump, not `otool`: the engine stdenv nulls apple-sdk so the wrapper
+    # cannot re-inject ld64, which takes cctools off PATH — `otool` would not be
+    # found, the `|| true` would swallow it and this gate would read an EMPTY
+    # list and pass on nothing. --macho --dylibs-used prints the same format.
+    llvm-objdump --macho --dylibs-used hw/vnc/Xvnc
+    bad=$(llvm-objdump --macho --dylibs-used hw/vnc/Xvnc | tail -n +2 \
+          | awk '{print $1}' \
           | grep -vE '^/usr/lib/libSystem|^/System/Library/Frameworks' || true)
     if [ -n "$bad" ]; then
       echo "FATAL: Xvnc links non-system dylibs:" >&2; echo "$bad" >&2; exit 1
@@ -278,9 +351,9 @@ in
 
   buildInputs = drop junk (o.buildInputs or [])
     ++ [ static.zlib static.libjpeg_turbo static.pixman gnutlsStatic
-         static.nettle libxfont2NoFt static.libxau static.libxdmcp
+         nettleGmp libxfont2NoFt static.libxau static.libxdmcp
          static.libfontenc ]
-    ++ [ static.libtasn1 static.libidn2 static.libunistring static.gmp
+    ++ [ static.libtasn1 static.libidn2 static.libunistring gmpNoAsm
          static.libiconvReal ]
     ++ (with opkgs.xorg; [
       xorgproto libX11 libxkbfile libXext libXfixes
