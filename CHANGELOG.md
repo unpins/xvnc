@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.16.2-1] - 2026-09-26
+
 Initial release — Xvnc from TigerVNC 1.16.2 (X server 21.1.22) as a single
 self-contained binary, built natively for Linux, macOS, and Windows.
 
