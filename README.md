@@ -106,6 +106,6 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
     `MIT-SHM` (Windows has no System V shared memory).
 
 - **Headless, viewer/PAM-free.** This ships only the `Xvnc` server — the FLTK
-  viewer, the `vncserver`/`vncpasswd`/`x0vncserver` wrapper tools, PAM, Wayland,
+  viewer, the `vncserver`/`vncpasswd`/`x0vncserver` wrapper scripts, PAM, Wayland,
   and H.264 are all dropped. GL/GLX/DRI3 are disabled; it renders to memory and
   needs no root, KMS, or DRM.
