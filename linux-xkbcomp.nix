@@ -8,8 +8,10 @@
 # it as an object, and lld reads bitcode there.
 #
 # `static` is a target static-musl package set (native or cross) with the
-# staticFixes overlay. `pkgs` is the build-host nixpkgs (arch-independent headers
-# + bison/makekeys run on the builder).
+# staticFixes overlay. `pkgs` is the TARGET's plain nixpkgs: only spliced inputs
+# (bison) and the source tarball come from it. Headers come from `static` — the
+# plain cross set's libX11/libxkbfile sit on a gcc stdenv, and interpolating
+# them made every Linux cross build bootstrap a cross gcc for a few headers.
 { ulib, static, pkgs }:
 let
   bintools = static.stdenv.cc.bintools.bintools;
@@ -39,8 +41,8 @@ let
       xkbcomp_all.bc -o xkbcomp_localized.o
   '';
 
-  xkbcInc = "-I. -I${pkgs.xorg.xorgproto}/include "
-    + "-I${pkgs.xorg.libxkbfile.dev}/include -I${pkgs.xorg.libX11.dev}/include";
+  xkbcInc = "-I. -I${static.xorg.xorgproto}/include "
+    + "-I${static.xorg.libxkbfile.dev}/include -I${static.xorg.libX11.dev}/include";
   libX11A = "${static.xorg.libX11}/lib/libX11.a";
   libxkbfileA = "${static.xorg.libxkbfile}/lib/libxkbfile.a";
 in
@@ -57,7 +59,7 @@ static.stdenv.mkDerivation {
     bison --defines=xkbparse.h -o xkbparse.c xkbparse.y
 
     "''${CC_FOR_BUILD:-$CC}" -O2 ${./tools/makekeys.c} -o makekeys
-    xkbproto=${pkgs.xorg.xorgproto}/include/X11
+    xkbproto=${static.xorg.xorgproto}/include/X11
     ./makekeys $xkbproto/keysymdef.h $xkbproto/XF86keysym.h \
                $xkbproto/Sunkeysym.h $xkbproto/DECkeysym.h \
                $xkbproto/HPkeysym.h > ks_tables.h
