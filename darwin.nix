@@ -94,19 +94,17 @@ let
   }).overrideAttrs (o: {
     configureFlags = (o.configureFlags or []) ++ [ "--disable-nls" ];
   });
-  # libXfont2 without the FreeType backend (PCF bitmap fonts only).
-  libxfont2NoFt = static.libxfont_2.overrideAttrs (o: {
-    configureFlags = (o.configureFlags or []) ++ [ "--disable-freetype" ];
-    buildInputs = builtins.filter
-      (x: (x.pname or x.name or "") != "freetype") (o.buildInputs or []);
-  });
+  # libXfont2 with its FreeType backend (scalable fonts from a -fp directory).
+  # The xserver links against the DYNAMIC set's pkg-config, which names
+  # -lfreetype but not its static tail, so the tail rides NIX_LDFLAGS below.
+  libxfont2 = static.libxfont_2;
   # The dynamic darwin set with the linked libs swapped to their pkgsStatic .a
   # variants (so tigervnc + the autotools xserver fold them static).
   opkgs = pkgs.extend (self: super: {
     inherit (static) pixman libjpeg_turbo;
     nettle = nettleGmp;
     gnutls = gnutlsStatic;
-    libxfont_2 = libxfont2NoFt;
+    libxfont_2 = libxfont2;
   });
 
   # The RunXkbComp → mkstemp+fork+fmemopen rewrite (darwin has all three; the
@@ -179,7 +177,7 @@ in
       -c ${ulib.vfsCore}/unpin_zstd.c -o $vfsdir/unpin_zstd.o
 
     ###### VFS-localized copy of libXfont2 + the xkbcomp blob ######
-    cp ${libxfont2NoFt}/lib/libXfont2.a $vfsdir/libXfont2_vfs.a
+    cp ${libxfont2}/lib/libXfont2.a $vfsdir/libXfont2_vfs.a
     chmod +w $vfsdir/libXfont2_vfs.a
     llvm-objcopy --redefine-syms=${redefMap} $vfsdir/libXfont2_vfs.a
     cp ${xkbcompObj}/xkbcomp_localized.o $vfsdir/blob_vfs.o
@@ -252,11 +250,20 @@ in
     # below names the dylib and fails the build rather than shipping it.
     mkdir -p "$TMPDIR/cxx-static"
     ln -sf ${static.zlib}/lib/libz.a "$TMPDIR/cxx-static/libz.a"
+    # FreeType and its tail by path, like libz: the dynamic set's -L dirs come
+    # first and would otherwise hand ld a .dylib.
+    for a in ${static.freetype}/lib/libfreetype.a ${static.libpng}/lib/libpng16.a \
+             ${static.bzip2.out}/lib/libbz2.a ${static.brotli.lib}/lib/libbrotlidec.a \
+             ${static.brotli.lib}/lib/libbrotlicommon.a; do
+      [ -f "$a" ] || { echo "FATAL: missing $a" >&2; exit 1; }
+      ln -sf "$a" "$TMPDIR/cxx-static/"
+    done
     # libiconv is resolved dead-last by the link shim (fix (5)) — libtool reorders
     # -lunistring past any -liconv we could place in NIX_LDFLAGS here.
     export NIX_LDFLAGS="-search_paths_first -dead_strip_dylibs \
       -L$TMPDIR/cxx-static $NIX_LDFLAGS \
       -ltasn1 -lidn2 -lunistring -lhogweed -lnettle -lgmp \
+      -lfreetype -lpng16 -lbz2 -lbrotlidec -lbrotlicommon \
       -framework CoreFoundation -framework Security"
     # The OBJECT paths go through NIX_CFLAGS_LINK, not NIX_LDFLAGS: the cc
     # wrapper `-Wl,`-prefixes every NIX_LDFLAGS token that does not start with
@@ -351,7 +358,7 @@ in
 
   buildInputs = drop junk (o.buildInputs or [])
     ++ [ static.zlib static.libjpeg_turbo static.pixman gnutlsStatic
-         nettleGmp libxfont2NoFt static.libxau static.libxdmcp
+         nettleGmp libxfont2 static.libxau static.libxdmcp
          static.libfontenc ]
     ++ [ static.libtasn1 static.libidn2 static.libunistring gmpNoAsm
          static.libiconvReal ]

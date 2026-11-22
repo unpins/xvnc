@@ -36,7 +36,9 @@ let
   # The unwrapped pkg-config honors PKG_CONFIG_PATH but doesn't get the cosmo
   # buildInputs' .pc dirs auto-populated. Feed the dirs explicitly: every
   # pkg-config module the xserver configure probes + the TLS chain.
-  pcPkgs = xLibs ++ [ c.pixman c.gnutls c.zlib c.libtasn1 c.gmp c.libjpeg_turbo c.nettle ];
+  pcPkgs = xLibs ++ [ c.pixman c.gnutls c.zlib c.libtasn1 c.gmp c.libjpeg_turbo c.nettle ]
+    # xfont2.pc requires freetype2, which requires these.
+    ++ [ c.freetype c.libpng c.bzip2 c.brotli ];
   pcPath = builtins.concatStringsSep ":"
     (builtins.concatMap (x: [
       "${np.lib.getDev x}/lib/pkgconfig"
@@ -190,6 +192,8 @@ in
       -L${c.nettle}/lib -lhogweed -lnettle \
       -L${c.gmp}/lib -lgmp \
       -L${c.zlib}/lib -lz \
+      -L${c.freetype}/lib -lfreetype -L${c.libpng}/lib -lpng16 \
+      -L${c.bzip2.out}/lib -lbz2 -L${np.lib.getLib c.brotli}/lib -lbrotlidec -lbrotlicommon \
       ${xkbcompObj}/xkbcomp_localized.o"
 
     make TIGERVNC_SRC=$src TIGERVNC_BUILDDIR=`pwd`/../.. -j$NIX_BUILD_CORES

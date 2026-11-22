@@ -55,7 +55,9 @@ no `XKB`/keymap directory, no font path, no companion files to ship:
   RMLVO layout compiles from the in-binary tree with no external `xkbcomp`.
 - **Core fonts.** `fixed`, `cursor`, and the `misc` bitmap fonts are embedded at
   the default font path, so clients that ask for the built-in fonts work with no
-  font server or font directory.
+  font server or font directory. TrueType and OpenType fonts are served too,
+  from any directory added with `-fp` (it needs a `fonts.dir`, as
+  `mkfontdir` writes; on Windows, write the path as `/C/fonts`).
 - **Encryption built in.** The TLS security types (`TLSNone`, `TLSVnc`,
   `X509None`, `X509Vnc`) and RSA-AES (`RA2`, `RA2ne`, …) are linked in
   statically, so encrypted sessions need no shared library — bring your own

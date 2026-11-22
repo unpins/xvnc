@@ -118,13 +118,24 @@
         } // lib.optionalAttrs (hp != bp) { crossSystem = { config = hp.config; }; });
 
       # Cosmo (Windows) leaf fixes — the X-stack chains that don't cross-build under
-      # cosmocc, plus the gnutls slim. libxfont2 needs no FreeType backend (PCF
-      # fonts only); libxcvt static; pixman drops the libpng/zlib-probing demos.
+      # cosmocc, plus the gnutls slim. libxcvt static; pixman drops the
+      # libpng/zlib-probing demos.
       xvncCosmoFixes = final: prev: {
+        # freetype's postInstall wraps freetype-config around a pkg-config built
+        # FOR cosmo, which does not build and which no shipped binary runs (the
+        # engine overlay drops it the same way on Linux).
+        freetype = prev.freetype.overrideAttrs (o: {
+          nativeBuildInputs = builtins.filter
+            (x: (x.name or "") != "make-shell-wrapper-hook")
+            (o.nativeBuildInputs or [ ]);
+          postInstall = "";
+        });
+        # libXfont2 links its own lsfontdir against freetype2.pc without
+        # --static, so libbrotlidec.a arrives without libbrotlicommon.a.
         libxfont_2 = prev.libxfont_2.overrideAttrs (o: {
-          configureFlags = (o.configureFlags or []) ++ [ "--disable-freetype" ];
-          buildInputs = builtins.filter
-            (x: (x.pname or x.name or "") != "freetype") (o.buildInputs or []);
+          env = (o.env or { }) // {
+            NIX_LDFLAGS = (o.env.NIX_LDFLAGS or "") + " -lbrotlicommon";
+          };
         });
         libxcvt = prev.libxcvt.overrideAttrs (o: {
           patches = (o.patches or [ ]) ++ [ ./patches/libxcvt-static-library.patch ];

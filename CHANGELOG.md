@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On macOS and Windows, TrueType and OpenType fonts in a directory added with
+  `-fp` were ignored: only bitmap fonts were served. They now work as on Linux.
+
 ## [1.16.2-1] - 2026-09-26
 
 Initial release — Xvnc from TigerVNC 1.16.2 (X server 21.1.22) as a single
