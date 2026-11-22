@@ -11,8 +11,8 @@
 # entirely: stock RunXkbComp writes the keymap spec and the compiled .xkm to
 # files under xkb_output_dir (/tmp), and the immediately-following
 # XkbDDXOpenConfigFile() reads the .xkm back from there. We replace BOTH files
-# with anonymous fds from unpin_anon_fd() (memfd on Linux, mkstemp+unlink on
-# macOS -- portable, mirrors unpin-vfs):
+# with anonymous memfds from unpin_anon_fd() (Linux only: macOS and Windows
+# use cosmo/patch-ddxload-cosmo.py):
 #   * spec  -> anon fd, materialized fully before the fork (no pipe => no
 #              deadlock); the forked xkbcomp reads it on stdin (dup2 + "-").
 #   * .xkm  -> anon fd, written by the forked xkbcomp on stdout (dup2 + "-")
@@ -20,8 +20,10 @@
 # fmemopen() can't be used here: its buffer lives in the process heap and is
 # NOT shared across fork(). An anon fd is a real (kernel- or inode-backed)
 # descriptor, inherited by the child, so its writes are visible to the parent.
-# Net effect on Linux: keyboard compilation never touches disk; on macOS it
-# uses one unlinked temp inode (no name, gone on close).
+# Net effect: keyboard compilation never touches disk.
+#
+# Not a .patch: it runs in postBuild on the xorg-server tree that the build
+# unpacks and patches itself, and asserts its anchors so a moved one fails loud.
 import sys
 
 p = 'xkb/ddxLoad.c'
@@ -42,25 +44,10 @@ s = s.replace(anchor, anchor +
     '#include <unistd.h>\n'
     '#include <sys/syscall.h>\n'
     'extern int unpin_xkbcomp_main(int, char **);\n'
-    '/* Anonymous, seekable, fork-inheritable fd -- mirrors the unpin-vfs\n'
-    '   anon_fd(): a real kernel memfd on Linux, mkstemp + immediate unlink on\n'
-    '   macOS (no memfd_create there). The unlinked temp inode has link count 0\n'
-    '   (no on-disk name, gone on close) and survives fork() as a shared fd to a\n'
-    '   real inode. Plain flags (not CLOEXEC) so the fork inherits it; no execve,\n'
-    '   so nothing leaks. */\n'
+    '/* Anonymous, seekable, fork-inheritable fd: a kernel memfd. Plain flags\n'
+    '   (not CLOEXEC) so the fork inherits it; no execve, so nothing leaks. */\n'
     'static int unpin_anon_fd(const char *tag) {\n'
-    '#if defined(__APPLE__)\n'
-    '    const char *t = getenv("TMPDIR");\n'
-    '    if (!t || !*t) t = "/tmp";\n'
-    '    char tmpl[1024];\n'
-    '    snprintf(tmpl, sizeof tmpl, "%s/unpinxkbXXXXXX", t);\n'
-    '    int fd = mkstemp(tmpl);\n'
-    '    if (fd >= 0) unlink(tmpl);\n'
-    '    (void) tag;\n'
-    '    return fd;\n'
-    '#else\n'
     '    return (int) syscall(SYS_memfd_create, tag, 0u);\n'
-    '#endif\n'
     '}\n'
     '/* fd of the in-process-compiled .xkm (an anonymous fd from unpin_anon_fd),\n'
     '   passed from RunXkbComp() to the XkbDDXOpenConfigFile() call that\n'
@@ -94,9 +81,8 @@ new_body = r'''{
 
     snprintf(keymap, sizeof(keymap), "server-%s", display);
 
-    /* Keymap I/O goes through anonymous fds (unpin_anon_fd): a kernel memfd on
-       Linux -- never touches disk -- or an unlinked temp inode on macOS. The
-       fds are plain (not CLOEXEC) so the fork below inherits them; there is no
+    /* Keymap I/O goes through anonymous memfds (unpin_anon_fd) and never
+       touches disk. The fds are plain (not CLOEXEC) so the fork below inherits them; there is no
        execve, so nothing leaks. */
     specfd = unpin_anon_fd("xkb-spec");
     xkmfd = unpin_anon_fd("xkb-xkm");

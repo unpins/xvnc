@@ -117,8 +117,7 @@ in
     autoreconf -vfi
     # XORG_PROG_RAWCPP feeds the raw preprocessor a conftest on STDIN with no
     # filename; the engine cc-wrapper's `cpp` answers "no input files" and the
-    # probe aborts ("defines unix with or without -undef"). Same fix, same
-    # reason, as the libx11 leaf override in flake.nix — RAWCPP only
+    # probe aborts ("defines unix with or without -undef"). RAWCPP only
     # preprocesses the xserver's host-independent .man text, so the build-host
     # cpp is the right tool. (xvfb is meson and never runs this probe.)
     export RAWCPP=${bpkgs.stdenv.cc}/bin/cpp
@@ -168,10 +167,6 @@ in
   installPhase = ''
     runHook preInstall
     install -Dm755 unix/xserver/hw/vnc/Xvnc $out/bin/Xvnc
-    # Man page (best-effort: the autotools build emits hw/vnc/Xvnc.1 from .man).
-    if [ -f unix/xserver/hw/vnc/Xvnc.1 ]; then
-      install -Dm644 unix/xserver/hw/vnc/Xvnc.1 $out/share/man/man1/Xvnc.1
-    fi
     ln -s Xvnc $out/bin/xvnc
     runHook postInstall
   '';

@@ -1,0 +1,14 @@
+Build libxcvt as the library type meson is asked for.
+
+lib/meson.build hardcodes shared_library(), which cannot link against a
+static-only crt; library() follows -Ddefault_library=static.
+
+--- a/lib/meson.build
++++ b/lib/meson.build
+@@ -1,5 +1,5 @@
+ libxcvt_sources = ['libxcvt.c']
+-libxcvt = shared_library('xcvt',
++libxcvt = library('xcvt',
+                          libxcvt_sources,
+                          include_directories : inc,
+                          version: meson.project_version(),

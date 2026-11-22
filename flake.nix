@@ -68,16 +68,13 @@
       # x86_64-linux executor directly.
       curatedMan = mkCuratedMan dataPkgs;
 
-      # pkgsStatic leaf fixes: libxcvt defaults meson to a shared object that can't
-      # link the static-only crt; libfontenc bakes its encodingsdir as an embedded
+      # pkgsStatic leaf fixes: libxcvt hardcodes a shared object that can't link
+      # the static-only crt; libfontenc bakes its encodingsdir as an embedded
       # /nix/store string → pin to /zip. riscv64 has no libjpeg-turbo SIMD impl but
       # simdcoverage.c still references the jsimd_can_* funcs → disable SIMD there.
       staticFixes = selfP: superP: {
         libxcvt = superP.libxcvt.overrideAttrs (o: {
-          postPatch = (o.postPatch or "") + ''
-            substituteInPlace lib/meson.build \
-              --replace-fail "shared_library('xcvt'," "library('xcvt',"
-          '';
+          patches = (o.patches or [ ]) ++ [ ./patches/libxcvt-static-library.patch ];
           mesonFlags = (o.mesonFlags or [ ]) ++ [ "-Ddefault_library=static" ];
         });
         libfontenc = superP.libfontenc.overrideAttrs (o: {
@@ -130,10 +127,7 @@
             (x: (x.pname or x.name or "") != "freetype") (o.buildInputs or []);
         });
         libxcvt = prev.libxcvt.overrideAttrs (o: {
-          postPatch = (o.postPatch or "") + ''
-            substituteInPlace lib/meson.build \
-              --replace 'shared_library(' 'library('
-          '';
+          patches = (o.patches or [ ]) ++ [ ./patches/libxcvt-static-library.patch ];
         });
         pixman = prev.pixman.overrideAttrs (o: {
           mesonFlags = (o.mesonFlags or []) ++ [ "-Dtests=disabled" "-Ddemos=disabled" ];
@@ -161,18 +155,9 @@
               "--disable-nls" "--disable-libdane" "--without-idn"
               "--with-included-unistring"
             ];
-            # gnulib's getlocalename_l-unsafe.c #errors on unrecognized targets
-            # (cosmo isn't in its ladder). Only gnutls's CLI-tools gnulib pulls it;
-            # cosmo defaults to the C locale, so the generic POSIX "C" fallback is
-            # correct (TigerVNC links only libgnutls.a, but nix builds the tools too).
-            postPatch = (o.postPatch or "") + ''
-              if [ -f src/gl/tests/getlocalename_l-unsafe.c ]; then
-                substituteInPlace src/gl/tests/getlocalename_l-unsafe.c \
-                  --replace-fail \
-                    '#error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."' \
-                    'return (struct string_with_storage) { "C", STORAGE_INDEFINITE };'
-              fi
-            '';
+            # TigerVNC links only libgnutls.a, but nix builds the CLI tools too,
+            # and their gnulib #errors on cosmo (see the patch).
+            patches = (o.patches or [ ]) ++ [ ./patches/gnutls-cosmo-locale-name.patch ];
             buildInputs = dropDep (o.buildInputs or []);
             propagatedBuildInputs = dropDep (o.propagatedBuildInputs or []);
           });

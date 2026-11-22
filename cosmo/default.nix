@@ -242,7 +242,10 @@ in
     } > $stage/fonts/misc/fonts.dir
     cp ${fontAlias}/share/fonts/X11/misc/fonts.alias $stage/fonts/misc/fonts.alias
     chmod -R u+w $stage
-    ( cd $stage && zip -q -r -9 "$bin" xkb fonts )
+    # Reproducible: fixed mtimes (fonts.dir/alias are written here, at build
+    # time), sorted entries, no extra fields.
+    find $stage -exec touch -h -d @$SOURCE_DATE_EPOCH {} +
+    ( cd $stage && find xkb fonts -print | LC_ALL=C sort | zip -q -9 -X "$bin" -@ )
     echo "embedded /zip xkb + fonts; $(basename "$bin") now $(stat -c %s "$bin") bytes"
 
     # The real binary keeps its UPSTREAM name `Xvnc(.exe)`. The catalog gate

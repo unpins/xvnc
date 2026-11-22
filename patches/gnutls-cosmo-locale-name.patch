@@ -1,0 +1,17 @@
+Fall back to the "C" locale name on unknown platforms.
+
+gnulib getlocalename_l-unsafe.c #errors on a target outside its ladder,
+and Cosmopolitan is one. Only gnutls's CLI-tools gnulib pulls it in, and
+cosmo starts in the C locale, so the POSIX "C" answer is right.
+
+--- a/src/gl/tests/getlocalename_l-unsafe.c
++++ b/src/gl/tests/getlocalename_l-unsafe.c
+@@ -659,7 +659,7 @@
+       const char *name = ((struct __locale_t *) locale)->mb_cur_max == 4 ? "C.UTF-8" : "C";
+       return (struct string_with_storage) { name, STORAGE_INDEFINITE };
+ #else
+- #error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."
++ return (struct string_with_storage) { "C", STORAGE_INDEFINITE };
+ #endif
+     }
+   else
