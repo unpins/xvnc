@@ -2,8 +2,8 @@
 # only (no fltk viewer, PAM, wayland, h264, nls), built static, with the
 # in-process xkbcomp blob + the VFS reader (vfs.c/miniz via `ld --wrap`) linked
 # in. It does NOT embed the xkb/font data or strip itself — the flake delegates
-# that to nix-lib's withUnpinEmbed (one self-EOF ZIP appended after the
-# framework's strip), exactly like the zsh/vim/xvfb ports.
+# that to nix-lib's unpinEmbedWrap via runtimeEmbed (one self-EOF ZIP appended
+# after the framework's strip), exactly like the zsh/vim/xvfb ports.
 #
 # TigerVNC is a two-stage build: CMake builds common/ (rfb/rdr/core/network/
 # unixcommon C++ libs), then nixpkgs' postBuild overlays the xorg-server source,
@@ -160,7 +160,7 @@ in
   };
 
   # Keep the upstream binary name `Xvnc` (catalog policy: binaries keep their
-  # upstream name). withUnpinEmbed (primary = "Xvnc") embeds into it after strip.
+  # upstream name). unpinEmbedWrap embeds into it after strip.
   # The catalog gate locates result/bin/<package-name> == result/bin/xvnc, so add
   # a lowercase compat symlink → the upstream binary; `readlink -f` resolves it
   # for verify/smoke/stage and no rename touches the real binary.
@@ -175,7 +175,7 @@ in
   meta = (o.meta or {}) // { platforms = pkgs.lib.platforms.all; };
 
   # Scrub the unused gnutls store ref + assert a single ELF binary. Runs after the
-  # framework strip and BEFORE withUnpinEmbed appends the data/man ZIP.
+  # framework strip and BEFORE unpinEmbedWrap appends the data/man ZIP.
   postFixup = (o.postFixup or "") + ''
     bin=$out/bin/Xvnc
     rm -rf $out/nix-support

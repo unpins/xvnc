@@ -107,5 +107,6 @@ The [Releases](https://github.com/unpins/xvnc/releases) page has standalone bina
 
 - **Headless, viewer/PAM-free.** This ships only the `Xvnc` server — the FLTK
   viewer, the `vncserver`/`vncpasswd`/`x0vncserver` wrapper scripts, PAM, Wayland,
-  and H.264 are all dropped. GL/GLX/DRI3 are disabled; it renders to memory and
-  needs no root, KMS, or DRM.
+  and H.264 are all dropped. GL/GLX/DRI3 are disabled: GLX needs Mesa's
+  drivers, which an X server loads as shared libraries at run time. It renders
+  to memory and needs no root, KMS, or DRM.

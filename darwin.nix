@@ -19,7 +19,7 @@
 # reads beat the store -lXfont2.
 #
 # Like linux.nix this produces ONLY the server drv (no data embed / no manual
-# strip) — the flake delegates the /zip embed to withUnpinEmbed (one self-EOF ZIP
+# strip) — the flake delegates the /zip embed to unpinEmbedWrap (one self-EOF ZIP
 # appended after the framework's strip; the bytes lie beyond codesign's codeLimit,
 # matching the zsh/vim darwin ports).
 #
@@ -28,12 +28,6 @@
 # auto-splice to the build host; script `${…}` interpolations use buildPackages.
 { ulib, pkgs, xkbcompObj }:
 let
-  # libfontenc bakes its font/encodings dirs into the library as absolute paths,
-  # and libXfont2 links it — so on darwin the shipped Xvnc carried a live store
-  # reference to libfontenc's own output and looked there at runtime, where a
-  # user's Mac has no /nix/store. The linux side already pins both to /zip (see
-  # the flake's staticFixes); this is that pin, and nothing more, so both
-  # platforms resolve fonts through the VFS and neither drags a store path.
   # gmp without its hand-written x86_64 assembly.
   #
   # The final link is ld64.lld now (Apple's ld64 is what this module used before
@@ -60,6 +54,12 @@ let
       ++ [ "--disable-assembly" ];
   });
   static = pkgs.pkgsStatic.extend (_: super: {
+    # libfontenc bakes its font/encodings dirs into the library as absolute paths,
+    # and libXfont2 links it — so on darwin the shipped Xvnc carried a live store
+    # reference to libfontenc's own output and looked there at runtime, where a
+    # user's Mac has no /nix/store. The linux side already pins both to /zip (see
+    # the flake's staticFixes); this is that pin, and nothing more, so both
+    # platforms resolve fonts through the VFS and neither drags a store path.
     libfontenc = super.libfontenc.overrideAttrs (o: {
       configureFlags = (o.configureFlags or [ ]) ++ [
         "--with-fontrootdir=/zip/fonts"
@@ -326,8 +326,8 @@ in
     popd
   '';
 
-  # Keep the upstream binary name `Xvnc`; withUnpinEmbed (primary = "Xvnc") embeds
-  # into it after strip. Add the lowercase `xvnc` gate symlink.
+  # Keep the upstream binary name `Xvnc`; unpinEmbedWrap embeds into it after
+  # strip. Add the lowercase `xvnc` gate symlink.
   installPhase = ''
     runHook preInstall
     install -Dm755 unix/xserver/hw/vnc/Xvnc $out/bin/Xvnc
@@ -342,7 +342,7 @@ in
   '';
   postInstall = "";
 
-  # Let the framework strip + withUnpinEmbed embed run (NO dontFixup). Scrub the
+  # Let the framework strip + unpinEmbedWrap embed run (NO dontFixup). Scrub the
   # unused gnutls store ref. No ELF-count assert here — the binary is Mach-O.
   postFixup = (o.postFixup or "") + ''
     rm -rf $out/nix-support

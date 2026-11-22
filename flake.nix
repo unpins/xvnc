@@ -20,8 +20,8 @@
   #     an autotools relink against a dynamic-base build with pkgsStatic libs and
   #     a libSystem-only gate; see darwin.nix.
   #   - Windows (Cosmopolitan APE → PE): cosmo's native zipos VFS; see cosmo/.
-  # The xkb tree + core fonts are embedded by nix-lib's withUnpinEmbed
-  # (runtimeStage) on Linux/macOS, and by cosmo's own zipos zip on Windows.
+  # The xkb tree + core fonts are embedded by nix-lib's unpinEmbedWrap
+  # (runtimeEmbed.native + runtimeStage) on Linux/macOS, and by cosmo's own zipos zip on Windows.
   #
   # Catalog naming policy: the shipped binary KEEPS its upstream name `Xvnc`
   # (binName = "Xvnc"); each module adds a lowercase `xvnc` compat symlink so the
@@ -39,7 +39,7 @@
       # Curated man tree: ONLY Xvnc.1 (decompressed). The autotools xserver build
       # doesn't leave a harvestable Xvnc.1 in share/man, and nixpkgs' tigervnc man
       # output carries pages for every tool we dropped (vncviewer/vncpasswd/…). Pin
-      # the one page we ship; used as manRoot for Linux/macOS (withUnpinEmbed) and
+      # the one page we ship; used as manRoot for Linux/macOS (runtimeEmbed) and
       # winManRoot for Windows, so all three embed exactly Xvnc.1.
       #
       # The page content is arch-independent (read from the x86_64-linux tigervnc as
@@ -164,7 +164,7 @@
       };
 
       # The xkb tree + core fonts, staged at the embedded ZIP root for the
-      # unpin-vfs self-EOF reader. Shared by the Linux + macOS withUnpinEmbed calls
+      # unpin-vfs self-EOF reader. Shared by the Linux + macOS runtimeEmbed wraps
       # (Windows embeds the same trees via cosmo's zipos in cosmo/).
       runtimeStage = ''
         mkdir -p "$__unpin_stage/xkb" "$__unpin_stage/fonts/misc"
@@ -188,7 +188,7 @@
 
       # The bare server derivation for a target pkg set: Linux static-musl or the
       # macOS dynamic-base build (branch on the platform). Does NOT embed data or
-      # strip — withUnpinEmbed (below) does that uniformly.
+      # strip — runtimeEmbed (below) does that uniformly.
       buildServer = pkgs0:
         let pkgs = allowUnsup pkgs0; in
         if pkgs.stdenv.hostPlatform.isDarwin then
@@ -234,8 +234,8 @@
       # lowercase compat symlink each module installs.
       binName = "Xvnc";
       # nixpkgs attr for the man graft (windows winManGraft) / optimize overlay.
-      # The build is bespoke, so GC is off; man is harvested from the build's own
-      # share/man on Linux/macOS and grafted from nixpkgs tigervnc on Windows.
+      # The build is bespoke, so GC is off. Man is the curated Xvnc.1 on every
+      # target (manRoot above, winManRoot below).
       pkgsAttr = "tigervnc";
       license = "GPL-2.0-or-later";
       optimize = { gc = false; };
