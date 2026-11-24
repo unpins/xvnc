@@ -124,12 +124,28 @@
         # freetype's postInstall wraps freetype-config around a pkg-config built
         # FOR cosmo, which does not build and which no shipped binary runs (the
         # engine overlay drops it the same way on Linux).
-        freetype = prev.freetype.overrideAttrs (o: {
-          nativeBuildInputs = builtins.filter
-            (x: (x.name or "") != "make-shell-wrapper-hook")
-            (o.nativeBuildInputs or [ ]);
-          postInstall = "";
+        #
+        # Then nix-lib's fix: harfbuzz linked in, or the autohinter tries to
+        # dlopen a libharfbuzz at run time. Without glib here: in harfbuzz it
+        # only supplies an alternative set of Unicode functions (hb-glib) next
+        # to harfbuzz's own tables, and glib does not build with cosmocc.
+        freetype = ulib.nativeFixes.freetype (prev // {
+          freetype = prev.freetype.overrideAttrs (o: {
+            nativeBuildInputs = builtins.filter
+              (x: (x.name or "") != "make-shell-wrapper-hook")
+              (o.nativeBuildInputs or [ ]);
+            postInstall = "";
+          });
+          harfbuzz = prev.harfbuzz.overrideAttrs (o: {
+            buildInputs = builtins.filter (x: (x.pname or "") != "glib") (o.buildInputs or [ ]);
+            nativeBuildInputs = builtins.filter (x: (x.pname or "") != "glib") (o.nativeBuildInputs or [ ]);
+            mesonFlags = (o.mesonFlags or [ ])
+              ++ [ "-Dglib=disabled" "-Dgobject=disabled" "-Dtests=disabled" ];
+          });
         });
+        harfbuzz = final.freetype.unpinHarfbuzz;
+        # nixpkgs' graphite2 takes freetype for an example program: a cycle now.
+        graphite2 = ulib.nativeFixes.graphite2 prev;
         # libXfont2 links its own lsfontdir against freetype2.pc without
         # --static, so libbrotlidec.a arrives without libbrotlicommon.a.
         libxfont_2 = prev.libxfont_2.overrideAttrs (o: {

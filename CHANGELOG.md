@@ -6,6 +6,11 @@
 
 - On macOS and Windows, TrueType and OpenType fonts in a directory added with
   `-fp` were ignored: only bitmap fonts were served. They now work as on Linux.
+- Scalable fonts (TrueType, OpenType) on the font path no longer depend on a
+  HarfBuzz shared library at run time. FreeType used one, when the system had
+  it, to hint glyphs such as small caps and superscripts; that HarfBuzz is now
+  built into the binary on every platform, so the result no longer depends on
+  what the system has installed.
 
 ## [1.16.2-1] - 2026-09-26
 

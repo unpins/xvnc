@@ -53,7 +53,7 @@ let
       builtins.filter (f: f != "--enable-fat") (o.configureFlags or [ ])
       ++ [ "--disable-assembly" ];
   });
-  static = pkgs.pkgsStatic.extend (_: super: {
+  static = pkgs.pkgsStatic.extend (final: super: {
     # libfontenc bakes its font/encodings dirs into the library as absolute paths,
     # and libXfont2 links it — so on darwin the shipped Xvnc carried a live store
     # reference to libfontenc's own output and looked there at runtime, where a
@@ -66,6 +66,15 @@ let
         "--with-encodingsdir=/zip/fonts/encodings"
       ];
     });
+  } // pkgs.lib.optionalAttrs (super.stdenv.hostPlatform.isStatic or false) {
+    # nix-lib's freetype fix: harfbuzz linked in, else the autohinter dlopens
+    # whatever libharfbuzz.0.dylib the Mac has. Gated on the static stage, whose
+    # buildPackages collapse into itself. graphite2 takes freetype in nixpkgs
+    # (a cycle now) and glib's meson objc probe needs the cross-file fix.
+    freetype = ulib.nativeFixes.freetype super;
+    harfbuzz = final.freetype.unpinHarfbuzz;
+    graphite2 = ulib.nativeFixes.graphite2 super;
+    glib = ulib.nativeFixes.glib super;
   });
   bpkgs = pkgs.buildPackages;
   multitool = ulib.llvmMultitool pkgs.stdenv.buildPlatform.system;
@@ -98,6 +107,11 @@ let
   # The xserver links against the DYNAMIC set's pkg-config, which names
   # -lfreetype but not its static tail, so the tail rides NIX_LDFLAGS below.
   libxfont2 = static.libxfont_2;
+  # freetype2.pc and what it requires; glib.pc's sysprof-capture and pcre2
+  # are not propagated by nixpkgs, and zlib's .pc lives in share/.
+  ftPcPath = with pkgs.lib; concatMapStringsSep ":" (p: "${getDev p}/lib/pkgconfig:${getDev p}/share/pkgconfig") (with static; [
+    freetype harfbuzz graphite2 glib libsysprof-capture pcre2 zlib bzip2 libpng brotli
+  ]);
   # The dynamic darwin set with the linked libs swapped to their pkgsStatic .a
   # variants (so tigervnc + the autotools xserver fold them static).
   opkgs = pkgs.extend (self: super: {
@@ -251,11 +265,26 @@ in
     mkdir -p "$TMPDIR/cxx-static"
     ln -sf ${static.zlib}/lib/libz.a "$TMPDIR/cxx-static/libz.a"
     # FreeType and its tail by path, like libz: the dynamic set's -L dirs come
-    # first and would otherwise hand ld a .dylib.
-    for a in ${static.freetype}/lib/libfreetype.a ${static.libpng}/lib/libpng16.a \
-             ${static.bzip2.out}/lib/libbz2.a ${static.brotli.lib}/lib/libbrotlidec.a \
-             ${static.brotli.lib}/lib/libbrotlicommon.a; do
-      [ -f "$a" ] || { echo "FATAL: missing $a" >&2; exit 1; }
+    # first and would otherwise hand ld a .dylib. The list is freetype2.pc's:
+    # harfbuzz brings graphite2, glib (pcre2, sysprof-capture, intl) and its
+    # frameworks. -liconv and the libSystem ones (-lm, -lpthread, ...) are left out;
+    # the shim resolves libiconv (fix (5)).
+    ftOut=$(PKG_CONFIG_PATH=${ftPcPath} ${bpkgs.pkg-config-unwrapped}/bin/pkg-config --static --libs freetype2)
+    case "$ftOut" in *-lharfbuzz*) ;; *) echo "FATAL: freetype2 link flags: '$ftOut'" >&2; exit 1 ;; esac
+    ftDirs="${pkgs.lib.getLib static.gettext}/lib"; ftLibs=""; ftFws=""; prev=""
+    for t in $ftOut; do
+      case "$t" in
+        -L*) ftDirs="$ftDirs ''${t#-L}" ;;
+        -liconv|-lm|-lpthread|-ldl|-lc) ;;
+        -l*) ftLibs="$ftLibs $t" ;;
+        -framework) ;;
+        *) [ "$prev" = -framework ] && ftFws="$ftFws -framework $t" ;;
+      esac
+      prev=$t
+    done
+    for l in $ftLibs; do
+      a=""; for d in $ftDirs; do [ -f "$d/lib''${l#-l}.a" ] && { a="$d/lib''${l#-l}.a"; break; }; done
+      [ -n "$a" ] || { echo "FATAL: no static archive for $l" >&2; exit 1; }
       ln -sf "$a" "$TMPDIR/cxx-static/"
     done
     # libiconv is resolved dead-last by the link shim (fix (5)) — libtool reorders
@@ -263,8 +292,8 @@ in
     export NIX_LDFLAGS="-search_paths_first -dead_strip_dylibs \
       -L$TMPDIR/cxx-static $NIX_LDFLAGS \
       -ltasn1 -lidn2 -lunistring -lhogweed -lnettle -lgmp \
-      -lfreetype -lpng16 -lbz2 -lbrotlidec -lbrotlicommon \
-      -framework CoreFoundation -framework Security"
+      $ftLibs \
+      -framework CoreFoundation -framework Security $ftFws"
     # The OBJECT paths go through NIX_CFLAGS_LINK, not NIX_LDFLAGS: the cc
     # wrapper `-Wl,`-prefixes every NIX_LDFLAGS token that does not start with
     # `-L/`, and the engine clang hands `-Wl,<path>` to ld64.lld whole —
