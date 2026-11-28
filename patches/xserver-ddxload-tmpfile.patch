@@ -1,0 +1,255 @@
+Compile the keymap in-process, through short-lived temp files (macOS, Windows).
+
+As xserver-ddxload-memfd.patch, without memfd_create: the spec and the .xkm
+are mkstemp files in TMPDIR (%TEMP% on cosmo). Windows can't unlink a file
+with an open handle, so the parent unlinks the spec after the fork, and reads
+the .xkm whole, closes and unlinks it before handing XkbDDXOpenConfigFile()
+an fmemopen() of the buffer. Nothing is left on disk. On cosmo the forked
+child re-execs from the binary on disk, embedded zip included.
+
+Applied in postBuild, after unix/xserver21.patch, on the xorg-server tree
+the build unpacks.
+
+--- a/xkb/ddxLoad.c	2026-11-28 02:29:05.599682286 -0300
++++ b/xkb/ddxLoad.c	2026-11-28 02:29:05.619681510 -0300
+@@ -41,6 +41,26 @@
+ #include "scrnintstr.h"
+ #include "windowstr.h"
+ #define	XKBSRV_NEED_FILE_FUNCS
++#include <sys/wait.h>
++#include <errno.h>
++#include <string.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <stdio.h>
++extern int unpin_xkbcomp_main(int, char **);
++/* mkstemp into TMPDIR; returns an open fd and writes the path to pathOut.
++   Not unlinked here -- Windows cannot unlink an open file; the caller
++   unlinks once no handle remains. */
++static int unpin_mkstemp(char *pathOut, size_t cap) {
++    const char *t = getenv("TMPDIR");
++    if (!t || !*t) t = getenv("TEMP");
++    if (!t || !*t) t = "/tmp";
++    snprintf(pathOut, cap, "%s/unpinxkbXXXXXX", t);
++    return mkstemp(pathOut);
++}
++/* The in-process-compiled .xkm, served from memory to the
++   XkbDDXOpenConfigFile() call that immediately follows RunXkbComp(). */
++static FILE *unpin_xkm_file = NULL;
+ #include <xkbsrv.h>
+ #include <X11/extensions/XI.h>
+ #include "xkb.h"
+@@ -98,109 +118,107 @@
+ static char *
+ RunXkbComp(xkbcomp_buffer_callback callback, void *userdata)
+ {
+-    FILE *out;
+-    char *buf = NULL, keymap[PATH_MAX], xkm_output_dir[PATH_MAX];
+-
+-    const char *emptystring = "";
+-    char *xkbbasedirflag = NULL;
+-    const char *xkbbindir = emptystring;
+-    const char *xkbbindirsep = emptystring;
+-
+-#ifdef WIN32
+-    /* WIN32 has no popen. The input must be stored in a file which is
+-       used as input for xkbcomp. xkbcomp does not read from stdin. */
+-    char tmpname[PATH_MAX];
+-    const char *xkmfile = tmpname;
+-#else
+-    const char *xkmfile = "-";
+-#endif
++    char keymap[PATH_MAX];
++    char specpath[PATH_MAX], xkmpath[PATH_MAX];
++    int specfd, xkmfd;
++    FILE *spec;
++    pid_t pid;
++    int st;
+ 
+     snprintf(keymap, sizeof(keymap), "server-%s", display);
+ 
+-    OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));
+-
+-#ifdef WIN32
+-    strcpy(tmpname, Win32TempDir());
+-    strcat(tmpname, "\\xkb_XXXXXX");
+-    (void) mktemp(tmpname);
+-#endif
+-
+-    if (XkbBaseDirectory != NULL) {
+-        if (asprintf(&xkbbasedirflag, "\"-R%s\"", XkbBaseDirectory) == -1)
+-            xkbbasedirflag = NULL;
++    /* Temp files in TMPDIR (no memfd on Windows). The fds are plain (not
++       CLOEXEC) so the fork inherits them; there is no execve, so nothing
++       leaks. */
++    specfd = unpin_mkstemp(specpath, sizeof specpath);
++    xkmfd = unpin_mkstemp(xkmpath, sizeof xkmpath);
++    if (specfd < 0 || xkmfd < 0) {
++        LogMessage(X_ERROR, "XKB: unpin_mkstemp failed: %s\n", strerror(errno));
++        if (specfd >= 0) { close(specfd); unlink(specpath); }
++        if (xkmfd >= 0) { close(xkmfd); unlink(xkmpath); }
++        return NULL;
+     }
+ 
+-    if (XkbBinDirectory != NULL) {
+-        int ld = strlen(XkbBinDirectory);
+-        int lps = strlen(PATHSEPARATOR);
+-
+-        xkbbindir = XkbBinDirectory;
+-
+-        if ((ld >= lps) && (strcmp(xkbbindir + ld - lps, PATHSEPARATOR) != 0)) {
+-            xkbbindirsep = PATHSEPARATOR;
+-        }
++    /* fdopen a dup so fclose() doesn't close specfd (the child inherits it). */
++    spec = fdopen(dup(specfd), "w");
++    if (!spec) {
++        LogMessage(X_ERROR, "XKB: fdopen(spec) failed\n");
++        close(specfd); unlink(specpath);
++        close(xkmfd); unlink(xkmpath);
++        return NULL;
++    }
++    (*callback)(spec, userdata);
++    if (fclose(spec) != 0) {
++        LogMessage(X_ERROR, "XKB: error writing keymap spec\n");
++        close(specfd); unlink(specpath);
++        close(xkmfd); unlink(xkmpath);
++        return NULL;
+     }
++    lseek(specfd, 0, SEEK_SET);
+ 
+-    if (asprintf(&buf,
+-                 "\"%s%sxkbcomp\" -w %d %s -xkm \"%s\" "
+-                 "-em1 %s -emp %s -eml %s \"%s%s.xkm\"",
+-                 xkbbindir, xkbbindirsep,
++    pid = fork();
++    if (pid == 0) {
++        char wlvl[8];
++        char *av[8];
++        int n = 0;
++        if (dup2(specfd, 0) < 0 || dup2(xkmfd, 1) < 0)
++            _exit(127);
++        snprintf(wlvl, sizeof(wlvl), "%d",
+                  ((xkbDebugFlags < 2) ? 1 :
+-                  ((xkbDebugFlags > 10) ? 10 : (int) xkbDebugFlags)),
+-                 xkbbasedirflag ? xkbbasedirflag : "", xkmfile,
+-                 PRE_ERROR_MSG, ERROR_PREFIX, POST_ERROR_MSG1,
+-                 xkm_output_dir, keymap) == -1)
+-        buf = NULL;
+-
+-    free(xkbbasedirflag);
+-
+-    if (!buf) {
+-        LogMessage(X_ERROR,
+-                   "XKB: Could not invoke xkbcomp: not enough memory\n");
++                  ((xkbDebugFlags > 10) ? 10 : (int) xkbDebugFlags)));
++        av[n++] = (char *) "xkbcomp";
++        av[n++] = (char *) "-w";
++        av[n++] = wlvl;
++        av[n++] = (char *) "-xkm";
++        av[n++] = (char *) "-";        /* input  = stdin  (spec) */
++        av[n++] = (char *) "-";        /* output = stdout (xkm)  */
++        av[n] = NULL;
++        _exit(unpin_xkbcomp_main(n, av) == 0 ? 0 : 1);
++    }
++    close(specfd);
++    unlink(specpath);               /* parent is done with the spec */
++    if (pid < 0) {
++        LogMessage(X_ERROR, "XKB: fork for in-process xkbcomp failed\n");
++        close(xkmfd); unlink(xkmpath);
+         return NULL;
+     }
+-
+-#ifndef WIN32
+-    out = Popen(buf, "w");
+-#else
+-    out = fopen(tmpname, "w");
+-#endif
+-
+-    if (out != NULL) {
+-        /* Now write to xkbcomp */
+-        (*callback)(out, userdata);
+-
+-#ifndef WIN32
+-        if (Pclose(out) == 0)
+-#else
+-        if (fclose(out) == 0 && System(buf) >= 0)
+-#endif
+-        {
+-            if (xkbDebugFlags)
+-                DebugF("[xkb] xkb executes: %s\n", buf);
+-            free(buf);
+-#ifdef WIN32
+-            unlink(tmpname);
+-#endif
+-            return xnfstrdup(keymap);
++    while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
++        ;
++    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
++        /* Read the compiled .xkm fully, then close+unlink so no handle lingers
++           (Windows can't delete an open file), and serve it from memory. */
++        long sz;
++        char *buf;
++        lseek(xkmfd, 0, SEEK_END);
++        sz = (long) lseek(xkmfd, 0, SEEK_CUR);
++        lseek(xkmfd, 0, SEEK_SET);
++        if (sz <= 0 || (buf = malloc((size_t) sz)) == NULL) {
++            close(xkmfd); unlink(xkmpath);
++            LogMessage(X_ERROR, "XKB: empty/oom .xkm (%s)\n", keymap);
++            return NULL;
+         }
+-        else {
+-            LogMessage(X_ERROR, "Error compiling keymap (%s) executing '%s'\n",
+-                       keymap, buf);
++        {
++            long got = 0;
++            while (got < sz) {
++                ssize_t r = read(xkmfd, buf + got, (size_t) (sz - got));
++                if (r <= 0) break;
++                got += r;
++            }
++            sz = got;
+         }
+-#ifdef WIN32
+-        /* remove the temporary file */
+-        unlink(tmpname);
+-#endif
+-    }
+-    else {
+-#ifndef WIN32
+-        LogMessage(X_ERROR, "XKB: Could not invoke xkbcomp\n");
+-#else
+-        LogMessage(X_ERROR, "Could not open file %s\n", tmpname);
+-#endif
++        close(xkmfd);
++        unlink(xkmpath);
++        if (unpin_xkm_file)
++            fclose(unpin_xkm_file);
++        unpin_xkm_file = fmemopen(buf, (size_t) sz, "rb");
++        if (!unpin_xkm_file) { free(buf); return NULL; }
++        if (xkbDebugFlags)
++            DebugF("[xkb] in-process xkbcomp compiled %s\n", keymap);
++        return xnfstrdup(keymap);
+     }
+-    free(buf);
++    close(xkmfd);
++    unlink(xkmpath);
++    LogMessage(X_ERROR, "Error compiling keymap (%s) in-process\n", keymap);
+     return NULL;
+ }
+ 
+@@ -299,6 +317,15 @@
+     char buf[PATH_MAX], xkm_output_dir[PATH_MAX];
+     FILE *file;
+ 
++    /* In-process compile just produced the .xkm in memory. */
++    if (unpin_xkm_file != NULL) {
++        FILE *f = unpin_xkm_file;
++        unpin_xkm_file = NULL;
++        if (fileNameRtrn != NULL && fileNameRtrnLen > 0)
++            fileNameRtrn[0] = '\0';
++        return f;
++    }
++
+     buf[0] = '\0';
+     if (mapName != NULL) {
+         OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));

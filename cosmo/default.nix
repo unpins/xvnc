@@ -3,7 +3,7 @@
 # Structure mirrors the Linux module (CMake common/ + autotools hw/vnc) with the
 # cosmo adaptations proven by the shipped xvfb cosmo build:
 #   * VFS = cosmo NATIVE zipos (/zip/...): NO vfs.o/miniz/--wrap; plain zip append.
-#   * RunXkbComp → in-process fork via the cosmo mkstemp+fmemopen patcher.
+#   * RunXkbComp → in-process fork through temp files (patches/xserver-ddxload-tmpfile.patch).
 #   * -DUSE_POLL (sysconf(_SC_OPEN_MAX)==-1 on Windows closes listen sockets).
 #   * XTRANS_SEND_FDS=0 (recvmsg/SCM_RIGHTS fails on Windows) — patched in the
 #     autotools-generated config header.
@@ -25,7 +25,6 @@ let
   fontMisc   = np.xorg.fontmiscmisc;
   fontCursor = np.xorg.fontcursormisc;
   fontAlias  = np.xorg.fontalias;
-  ddxCosmoPatch = ./patch-ddxload-cosmo.py;
 
   # On cosmo (non-Linux) tigervnc's X-stack buildInputs are gated out — so the
   # autotools xserver's configure has no xorgproto/Xfont2/Xau/Xdmcp/xkbfile to
@@ -112,8 +111,7 @@ in
     pushd unix/xserver
     patch -p1 < "$source_top/unix/xserver21.patch"
 
-    # RunXkbComp → in-process fork + unpin_xkbcomp_main (cosmo mkstemp+fmemopen).
-    ${np.python3.interpreter} ${ddxCosmoPatch}
+    patch -p1 < ${../patches/xserver-ddxload-tmpfile.patch}
 
     autoreconf -vfi
 

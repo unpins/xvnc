@@ -100,8 +100,7 @@ in
     pushd unix/xserver
     patch -p1 < "$source_top/unix/xserver21.patch"
 
-    # RunXkbComp → in-process fork + unpin_xkbcomp_main (build-host python3).
-    ${bpkgs.python3.interpreter} ${./patch-ddxload.py}
+    patch -p1 < ${./patches/xserver-ddxload-memfd.patch}
 
     autoreconf -vfi
     # XORG_PROG_RAWCPP feeds the raw preprocessor a conftest on STDIN with no

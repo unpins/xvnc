@@ -1,0 +1,238 @@
+Compile the keymap in-process, through memfds (Linux).
+
+RunXkbComp() forks and calls the built-in unpin_xkbcomp_main() instead of
+running an external xkbcomp: the child keeps the binary and its embedded
+xkeyboard-config tree, and a fresh address space per compile sidesteps
+xkbcomp's non-reentrant globals. The spec and the compiled .xkm go through
+two memfds (stdin and stdout of the child) instead of files in /tmp, and
+XkbDDXOpenConfigFile() takes the .xkm fd RunXkbComp() hands it. fmemopen()
+won't do: its buffer is not shared across fork().
+
+Applied in postBuild, after unix/xserver21.patch, on the xorg-server tree
+the build unpacks.
+
+--- a/xkb/ddxLoad.c	2026-11-28 02:29:05.567683528 -0300
++++ b/xkb/ddxLoad.c	2026-11-28 02:29:05.587682751 -0300
+@@ -41,6 +41,22 @@
+ #include "scrnintstr.h"
+ #include "windowstr.h"
+ #define	XKBSRV_NEED_FILE_FUNCS
++#include <sys/wait.h>
++#include <errno.h>
++#include <string.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <sys/syscall.h>
++extern int unpin_xkbcomp_main(int, char **);
++/* Anonymous, seekable, fork-inheritable fd: a kernel memfd. Plain flags
++   (not CLOEXEC) so the fork inherits it; no execve, so nothing leaks. */
++static int unpin_anon_fd(const char *tag) {
++    return (int) syscall(SYS_memfd_create, tag, 0u);
++}
++/* fd of the in-process-compiled .xkm (an anonymous fd from unpin_anon_fd),
++   passed from RunXkbComp() to the XkbDDXOpenConfigFile() call that
++   immediately follows it in both load paths. -1 when none is pending. */
++static int unpin_xkm_memfd = -1;
+ #include <xkbsrv.h>
+ #include <X11/extensions/XI.h>
+ #include "xkb.h"
+@@ -98,109 +114,90 @@
+ static char *
+ RunXkbComp(xkbcomp_buffer_callback callback, void *userdata)
+ {
+-    FILE *out;
+-    char *buf = NULL, keymap[PATH_MAX], xkm_output_dir[PATH_MAX];
+-
+-    const char *emptystring = "";
+-    char *xkbbasedirflag = NULL;
+-    const char *xkbbindir = emptystring;
+-    const char *xkbbindirsep = emptystring;
+-
+-#ifdef WIN32
+-    /* WIN32 has no popen. The input must be stored in a file which is
+-       used as input for xkbcomp. xkbcomp does not read from stdin. */
+-    char tmpname[PATH_MAX];
+-    const char *xkmfile = tmpname;
+-#else
+-    const char *xkmfile = "-";
+-#endif
++    char keymap[PATH_MAX];
++    int specfd, xkmfd;
++    FILE *spec;
++    pid_t pid;
++    int st;
+ 
+     snprintf(keymap, sizeof(keymap), "server-%s", display);
+ 
+-    OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));
+-
+-#ifdef WIN32
+-    strcpy(tmpname, Win32TempDir());
+-    strcat(tmpname, "\\xkb_XXXXXX");
+-    (void) mktemp(tmpname);
+-#endif
+-
+-    if (XkbBaseDirectory != NULL) {
+-        if (asprintf(&xkbbasedirflag, "\"-R%s\"", XkbBaseDirectory) == -1)
+-            xkbbasedirflag = NULL;
++    /* Keymap I/O goes through anonymous memfds (unpin_anon_fd) and never
++       touches disk. The fds are plain (not CLOEXEC) so the fork below inherits them; there is no
++       execve, so nothing leaks. */
++    specfd = unpin_anon_fd("xkb-spec");
++    xkmfd = unpin_anon_fd("xkb-xkm");
++    if (specfd < 0 || xkmfd < 0) {
++        LogMessage(X_ERROR, "XKB: unpin_anon_fd failed: %s\n", strerror(errno));
++        if (specfd >= 0) close(specfd);
++        if (xkmfd >= 0) close(xkmfd);
++        return NULL;
+     }
+ 
+-    if (XkbBinDirectory != NULL) {
+-        int ld = strlen(XkbBinDirectory);
+-        int lps = strlen(PATHSEPARATOR);
+-
+-        xkbbindir = XkbBinDirectory;
+-
+-        if ((ld >= lps) && (strcmp(xkbbindir + ld - lps, PATHSEPARATOR) != 0)) {
+-            xkbbindirsep = PATHSEPARATOR;
+-        }
++    /* Write the keymap spec (xkb text + component includes) fully into the
++       memfd before forking -- no pipe, so no writer/reader deadlock. fdopen a
++       dup so fclose() doesn't close specfd (the child must still inherit it). */
++    spec = fdopen(dup(specfd), "w");
++    if (!spec) {
++        LogMessage(X_ERROR, "XKB: fdopen(spec memfd) failed\n");
++        close(specfd);
++        close(xkmfd);
++        return NULL;
+     }
+-
+-    if (asprintf(&buf,
+-                 "\"%s%sxkbcomp\" -w %d %s -xkm \"%s\" "
+-                 "-em1 %s -emp %s -eml %s \"%s%s.xkm\"",
+-                 xkbbindir, xkbbindirsep,
+-                 ((xkbDebugFlags < 2) ? 1 :
+-                  ((xkbDebugFlags > 10) ? 10 : (int) xkbDebugFlags)),
+-                 xkbbasedirflag ? xkbbasedirflag : "", xkmfile,
+-                 PRE_ERROR_MSG, ERROR_PREFIX, POST_ERROR_MSG1,
+-                 xkm_output_dir, keymap) == -1)
+-        buf = NULL;
+-
+-    free(xkbbasedirflag);
+-
+-    if (!buf) {
+-        LogMessage(X_ERROR,
+-                   "XKB: Could not invoke xkbcomp: not enough memory\n");
++    (*callback)(spec, userdata);
++    if (fclose(spec) != 0) {
++        LogMessage(X_ERROR, "XKB: error writing keymap spec\n");
++        close(specfd);
++        close(xkmfd);
+         return NULL;
+     }
++    lseek(specfd, 0, SEEK_SET);
+ 
+-#ifndef WIN32
+-    out = Popen(buf, "w");
+-#else
+-    out = fopen(tmpname, "w");
+-#endif
+-
+-    if (out != NULL) {
+-        /* Now write to xkbcomp */
+-        (*callback)(out, userdata);
+-
+-#ifndef WIN32
+-        if (Pclose(out) == 0)
+-#else
+-        if (fclose(out) == 0 && System(buf) >= 0)
+-#endif
+-        {
+-            if (xkbDebugFlags)
+-                DebugF("[xkb] xkb executes: %s\n", buf);
+-            free(buf);
+-#ifdef WIN32
+-            unlink(tmpname);
+-#endif
+-            return xnfstrdup(keymap);
+-        }
+-        else {
+-            LogMessage(X_ERROR, "Error compiling keymap (%s) executing '%s'\n",
+-                       keymap, buf);
+-        }
+-#ifdef WIN32
+-        /* remove the temporary file */
+-        unlink(tmpname);
+-#endif
++    pid = fork();
++    if (pid == 0) {
++        char wlvl[8];
++        char *av[8];
++        int n = 0;
++        /* Feed the spec on stdin and collect the .xkm on stdout, both wired to
++           the inherited memfds via dup2. xkbcomp's "-" OUTPUT writes straight
++           to stdout and skips the symlink-guard open(O_WRONLY|O_CREAT|O_EXCL)
++           it does for NAMED outputs -- that O_EXCL would EEXIST against an
++           already-open memfd path. "-" INPUT reads stdin. Net: no /proc, no
++           named path, nothing on disk; xkbcomp's own fclose(stdout) flushes
++           the binary keymap into the memfd. */
++        if (dup2(specfd, 0) < 0 || dup2(xkmfd, 1) < 0)
++            _exit(127);
++        snprintf(wlvl, sizeof(wlvl), "%d",
++                 ((xkbDebugFlags < 2) ? 1 :
++                  ((xkbDebugFlags > 10) ? 10 : (int) xkbDebugFlags)));
++        av[n++] = (char *) "xkbcomp";
++        av[n++] = (char *) "-w";
++        av[n++] = wlvl;
++        av[n++] = (char *) "-xkm";
++        av[n++] = (char *) "-";        /* input  = stdin  (spec memfd) */
++        av[n++] = (char *) "-";        /* output = stdout (xkm memfd)  */
++        av[n] = NULL;
++        _exit(unpin_xkbcomp_main(n, av) == 0 ? 0 : 1);
+     }
+-    else {
+-#ifndef WIN32
+-        LogMessage(X_ERROR, "XKB: Could not invoke xkbcomp\n");
+-#else
+-        LogMessage(X_ERROR, "Could not open file %s\n", tmpname);
+-#endif
++    close(specfd);              /* parent is done with the spec */
++    if (pid < 0) {
++        LogMessage(X_ERROR, "XKB: fork for in-process xkbcomp failed\n");
++        close(xkmfd);
++        return NULL;
+     }
+-    free(buf);
++    while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
++        ;
++    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
++        lseek(xkmfd, 0, SEEK_SET);
++        if (unpin_xkm_memfd >= 0)  /* defensive: no stale fd should survive */
++            close(unpin_xkm_memfd);
++        unpin_xkm_memfd = xkmfd;    /* handed to XkbDDXOpenConfigFile() next */
++        if (xkbDebugFlags)
++            DebugF("[xkb] in-process xkbcomp compiled %s (anon fd)\n", keymap);
++        return xnfstrdup(keymap);
++    }
++    close(xkmfd);
++    LogMessage(X_ERROR, "Error compiling keymap (%s) in-process\n", keymap);
+     return NULL;
+ }
+ 
+@@ -299,6 +296,16 @@
+     char buf[PATH_MAX], xkm_output_dir[PATH_MAX];
+     FILE *file;
+ 
++    /* In-process compile just handed us the .xkm as an anonymous memfd. */
++    if (unpin_xkm_memfd >= 0) {
++        int fd = unpin_xkm_memfd;
++        unpin_xkm_memfd = -1;
++        if (fileNameRtrn != NULL && fileNameRtrnLen > 0)
++            fileNameRtrn[0] = '\0';
++        lseek(fd, 0, SEEK_SET);
++        return fdopen(fd, "rb");
++    }
++
+     buf[0] = '\0';
+     if (mapName != NULL) {
+         OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));

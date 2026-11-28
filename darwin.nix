@@ -121,9 +121,8 @@ let
     libxfont_2 = libxfont2;
   });
 
-  # The RunXkbComp → mkstemp+fork+fmemopen rewrite (darwin has all three; the
-  # cosmo variant is correct for macOS too).
-  ddxPatch = ./cosmo/patch-ddxload-cosmo.py;
+  # The cosmo RunXkbComp rewrite: darwin has mkstemp, fork and fmemopen too.
+  ddxPatch = ./patches/xserver-ddxload-tmpfile.patch;
 
   # VFS redefine map: route the server's file I/O to vfs.c's _unpinvfs_*.
   # Generated from nix-lib's ONE spelling table (lib.vfsBindMap) — the same table
@@ -211,8 +210,7 @@ in
     pushd unix/xserver
     patch -p1 < "$source_top/unix/xserver21.patch"
 
-    # RunXkbComp → in-process fork + unpin_xkbcomp_main (build-host python3).
-    ${bpkgs.python3.interpreter} ${ddxPatch}
+    patch -p1 < ${ddxPatch}
 
     autoreconf -vfi
     # XORG_PROG_RAWCPP feeds the raw preprocessor a conftest on STDIN with no
