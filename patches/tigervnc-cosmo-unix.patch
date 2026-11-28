@@ -1,0 +1,16 @@
+Set UNIX on Cosmopolitan.
+
+CMake doesn't set UNIX for the cosmo system, so the if(UNIX) branches
+(libtool .la files, syslog logger, UnixPasswordValidator) were skipped.
+Cosmo is POSIX; WIN32 stays false.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -19,6 +19,7 @@
+ include(CMakeMacroLibtoolFile)
+ 
+ project(tigervnc)
++set(UNIX TRUE)
+ set(VERSION 1.16.2)
+ 
+ # The RC version must always be four comma-separated numbers

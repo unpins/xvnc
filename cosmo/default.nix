@@ -89,23 +89,11 @@ in
     # sysroot's libpthread.a.
     "-DCMAKE_LIBRARY_PATH=${cosmoCcLib}"
   ];
+  patches = (o.patches or [ ]) ++ [
+    ../patches/tigervnc-xvnc-only.patch ../patches/tigervnc-cosmo-unix.patch
+  ];
   postPatch = (o.postPatch or "") + ''
-    substituteInPlace CMakeLists.txt \
-      --replace-fail "find_package(PAM REQUIRED)" "find_package(PAM)" \
-      --replace-fail "add_subdirectory(tests)" "# unpins: dropped"
     cp ${../UnixPasswordValidator-stub.cxx} common/rfb/UnixPasswordValidator.cxx
-    substituteInPlace unix/CMakeLists.txt \
-      --replace-fail "add_subdirectory(tx)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(vncconfig)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(vncpasswd)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(vncserver)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(x0vncserver)" "# unpins: dropped"
-    # CMake doesn't set UNIX for the cosmo system, but cosmo IS POSIX-like — the
-    # source's if(UNIX) branches are exactly the ones we want. Without UNIX set,
-    # cosmo wrongly skips Unix-gated sources: the libtool .la control files, the
-    # syslog logger, and (via `if(UNIX AND NOT APPLE)`) UnixPasswordValidator.cxx.
-    # Force UNIX TRUE right after project(). WIN32 stays false on cosmo.
-    sed -i '/^project(tigervnc)/a set(UNIX TRUE)' CMakeLists.txt
   '';
 
   # Full replacement of the nixpkgs postBuild: autotools xserver hw/vnc → Xvnc,

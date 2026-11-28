@@ -157,25 +157,11 @@ in
   cmakeFlags = (o.cmakeFlags or []) ++ [
     "-DBUILD_VIEWER=0" "-DENABLE_NLS=0" "-DENABLE_H264=0"
   ];
+  patches = (o.patches or [ ]) ++ [
+    ./patches/tigervnc-xvnc-only.patch ./patches/tigervnc-darwin-unix.patch
+  ];
   postPatch = (o.postPatch or "") + ''
-    substituteInPlace CMakeLists.txt \
-      --replace-fail "find_package(PAM REQUIRED)" "find_package(PAM)" \
-      --replace-fail "add_subdirectory(tests)" "# dropped"
-    # Compile UnixPasswordValidator on darwin (upstream gates it NOT APPLE).
-    substituteInPlace common/rfb/CMakeLists.txt \
-      --replace-fail "if(UNIX AND NOT APPLE)" "if(UNIX)"
-    # libvnc.la hardcodes GNU "-Wl,-z,now"; ld64 rejects "-z now". Drop it.
-    substituteInPlace unix/xserver/hw/vnc/Makefile.am \
-      --replace-fail "-module -avoid-version -Wl,-z,now" "-module -avoid-version"
-    # Force unix/ on darwin (gated NOT APPLE) so unix/common → libunixcommon.la.
-    ${bpkgs.python3.interpreter} -c "f='CMakeLists.txt'; s=open(f).read(); s=s.replace('  if(NOT APPLE)\n    add_subdirectory(unix)\n  endif()','  add_subdirectory(unix)'); assert 'add_subdirectory(unix)' in s; open(f,'w').write(s)"
     cp ${./UnixPasswordValidator-stub.cxx} common/rfb/UnixPasswordValidator.cxx
-    substituteInPlace unix/CMakeLists.txt \
-      --replace-fail "add_subdirectory(tx)" "# dropped" \
-      --replace-fail "add_subdirectory(vncconfig)" "# dropped" \
-      --replace-fail "add_subdirectory(vncpasswd)" "# dropped" \
-      --replace-fail "add_subdirectory(vncserver)" "# dropped" \
-      --replace-fail "add_subdirectory(x0vncserver)" "# dropped"
   '';
   postBuild = ''
     source_top="$PWD"

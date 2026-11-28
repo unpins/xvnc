@@ -1,0 +1,40 @@
+Build Xvnc's unix/ parts on macOS.
+
+Upstream skips unix/ and UnixPasswordValidator on Apple, and libvnc.la
+passes GNU "-Wl,-z,now", which ld64 rejects.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -442,9 +442,7 @@
+   add_subdirectory(win)
+ else()
+   # No interest in building x related parts on Apple
+-  if(NOT APPLE)
+-    add_subdirectory(unix)
+-  endif()
++  add_subdirectory(unix)
+ endif()
+ 
+ if(ENABLE_NLS)
+--- a/common/rfb/CMakeLists.txt
++++ b/common/rfb/CMakeLists.txt
+@@ -76,7 +76,7 @@
+   target_sources(rfb PRIVATE WinPasswdValidator.cxx)
+ endif(WIN32)
+ 
+-if(UNIX AND NOT APPLE)
++if(UNIX)
+   target_sources(rfb PRIVATE UnixPasswordValidator.cxx)
+   target_include_directories(rfb SYSTEM PRIVATE ${PAM_INCLUDE_DIRS})
+   target_link_libraries(rfb ${PAM_LIBRARIES})
+--- a/unix/xserver/hw/vnc/Makefile.am
++++ b/unix/xserver/hw/vnc/Makefile.am
+@@ -82,7 +82,7 @@
+ 	-I$(top_srcdir)/hw/xfree86/os-support \
+ 	-I$(top_srcdir)/hw/xfree86/os-support/bus
+ 
+-libvnc_la_LDFLAGS = -module -avoid-version -Wl,-z,now
++libvnc_la_LDFLAGS = -module -avoid-version
+ 
+ libvnc_la_LIBADD = libvnccommon.la $(COMMON_LIBS)
+ 

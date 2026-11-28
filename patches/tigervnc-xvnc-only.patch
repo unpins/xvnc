@@ -1,0 +1,46 @@
+Build only Xvnc and the libraries it links.
+
+PAM becomes optional (a PAM-free UnixPasswordValidator replaces the real
+one), and the tests and the unix/ programs other than Xvnc are not built:
+vncserver needs PAM, x0vncserver/vncconfig/tx are X clients.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -342,7 +342,7 @@
+ 
+ # Check for PAM library
+ if(UNIX AND NOT APPLE)
+-  find_package(PAM REQUIRED)
++  find_package(PAM)
+ endif()
+ 
+ # Check for SELinux library
+@@ -456,7 +456,7 @@
+   add_subdirectory(media)
+ endif()
+ 
+-add_subdirectory(tests)
++# unpins: dropped (tests not shipped)
+ 
+ 
+ if(BUILD_VIEWER)
+--- a/unix/CMakeLists.txt
++++ b/unix/CMakeLists.txt
+@@ -2,12 +2,12 @@
+   message(FATAL_ERROR "cmake must be invoked with the top level directory")
+ endif()
+ 
+-add_subdirectory(tx)
++# unpins: dropped
+ add_subdirectory(common)
+-add_subdirectory(vncconfig)
+-add_subdirectory(vncpasswd)
+-add_subdirectory(vncserver)
+-add_subdirectory(x0vncserver)
++# unpins: dropped
++# unpins: dropped
++# unpins: dropped
++# unpins: dropped
+ 
+ if (ENABLE_WAYLAND)
+   add_subdirectory(w0vncserver)

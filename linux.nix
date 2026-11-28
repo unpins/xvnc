@@ -70,20 +70,9 @@ in
   cmakeFlags = (o.cmakeFlags or []) ++ [
     "-DBUILD_VIEWER=0" "-DENABLE_NLS=0" "-DENABLE_H264=0"
   ];
-  # PAM dropped: find_package non-required + PAM-free UnixPasswordValidator stub
-  # (the rfb lib still links via the kept API). Also trim the unshipped unix/*
-  # tools (vncserver→vncsession→PAM; x0vncserver/tx→GUI) and the tests.
+  patches = (o.patches or [ ]) ++ [ ./patches/tigervnc-xvnc-only.patch ];
   postPatch = (o.postPatch or "") + ''
-    substituteInPlace CMakeLists.txt \
-      --replace-fail "find_package(PAM REQUIRED)" "find_package(PAM)" \
-      --replace-fail "add_subdirectory(tests)" "# unpins: dropped (tests not shipped)"
     cp ${./UnixPasswordValidator-stub.cxx} common/rfb/UnixPasswordValidator.cxx
-    substituteInPlace unix/CMakeLists.txt \
-      --replace-fail "add_subdirectory(tx)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(vncconfig)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(vncpasswd)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(vncserver)" "# unpins: dropped" \
-      --replace-fail "add_subdirectory(x0vncserver)" "# unpins: dropped"
   '';
   # Full replacement of the nixpkgs postBuild (autotools xserver hw/vnc → Xvnc):
   #   - paths repointed to the embedded /zip VFS
